@@ -11,40 +11,40 @@ import ollama
 import pyautogui
 import keyboard
 
-# --- SETTINGS ---
+# --- НАСТРОЙКИ ---
 OLLAMA_MODEL = "gemma"
 SILERO_DEVICE = "cpu"
 SAMPLE_RATE = 48000
-SPEAKER = "en_0"
+SPEAKER = "xenia"
 
-# --- TTS MODEL ---
-print(">>> Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
+# --- МОДЕЛЬ ТТС ---
+print(">>> Загрузка модели голоса Silero TTS... (если уже загружено в другом модуле, загрузка будет выполнена повторно)")
 model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
                               model='silero_tts',
-                              language='en',
-                              speaker='v3_en')
+                              language='ru',
+                              speaker='v4_ru')
 model_tts.to(torch.device(SILERO_DEVICE))
-print(">>> Voice loaded. Assistant ready!")
+print(">>> Голос загружен. Ассистент готов!")
 
-# --- MEMORY AND PROMPT ---
+# --- ПАМЯТЬ И ПРОМПТ ---
 system_prompt = """
-You are a voice assistant. You control the computer and respond in English.
-If the user asks to perform an action from the list below, return ONLY the special command tag:
-- Open browser -> {{OPEN_BROWSER}}
-- Open notepad -> {{OPEN_NOTEPAD}}
-- Increase volume -> {{VOLUME_UP}}
-- Decrease volume -> {{VOLUME_DOWN}}
-If there is no action to perform — reply briefly (no more than 2 sentences).
+Ты — голосовой ассистент. Ты управляешь компьютером и отвечаешь по-русски.
+Если пользователь просит выполнить действие из списка ниже, возвращай ТОЛЬКО специальный тег команды:
+- Открыть браузер -> {{OPEN_BROWSER}}
+- Открыть блокнот -> {{OPEN_NOTEPAD}}
+- Сделать громче -> {{VOLUME_UP}}
+- Сделать тише -> {{VOLUME_DOWN}}
+Если действия нет — отвечай кратко (не больше 2 предложений).
 """
 
 messages_history = [
     {'role': 'system', 'content': system_prompt}
 ]
 
-# --- COMMANDS (OS control integration) ---
+# --- КОМАНДЫ (интеграция управления ОС) ---
 def open_browser():
     webbrowser.open("https://www.google.com")
-    return "Opening browser."
+    return "Открываю браузер."
 
 def open_notepad():
     if platform.system() == "Windows":
@@ -53,17 +53,17 @@ def open_notepad():
         os.system("open -a TextEdit")
     else:
         os.system("gedit")
-    return "Launching notepad."
+    return "Запускаю блокнот."
 
 def volume_up():
     for _ in range(5):
         pyautogui.press("volumeup")
-    return "Increased volume."
+    return "Сделала громче."
 
 def volume_down():
     for _ in range(5):
         pyautogui.press("volumedown")
-    return "Decreased volume."
+    return "Сделала тише."
 
 commands = {
     "{{OPEN_BROWSER}}": open_browser,
@@ -74,21 +74,21 @@ commands = {
 
 is_running = True
 
-# --- KEYBOARD UTILITIES ---
+# --- УТИЛИТЫ КЛАВИАТУРЫ ---
 def toggle_exit():
     global is_running
-    print("\n⌨️ Exit with Ctrl+Q...")
+    print("\n⌨️ Выход по Ctrl+Q...")
     is_running = False
 
 def setup_keyboard_shortcuts():
     keyboard.add_hotkey('ctrl+q', lambda: toggle_exit())
-    print("   Ctrl+Q - exit")
+    print("   Ctrl+Q - выйти")
 
 # --- TTS / ASR ---
 def speak_silero(text):
     if not text:
         return
-    print(f"🔊 Assistant: {text}")
+    print(f"🔊 Ассистент: {text}")
     audio = model_tts.apply_tts(text=text, speaker=SPEAKER, sample_rate=SAMPLE_RATE)
     sd.play(audio.numpy(), SAMPLE_RATE)
     sd.wait()
@@ -97,23 +97,23 @@ def speak_silero(text):
 def listen():
     r = sr.Recognizer()
     with sr.Microphone() as source:
-        print("\n🎤 Listening...")
+        print("\n🎤 Слушаю...")
         r.adjust_for_ambient_noise(source, duration=0.5)
         try:
             audio = r.listen(source, timeout=5, phrase_time_limit=15)
-            query = r.recognize_google(audio, language="en-US")
-            print(f" You: {query}")
+            query = r.recognize_google(audio, language="ru-RU")
+            print(f" Вы: {query}")
             return query
         except sr.UnknownValueError:
             return None
         except Exception as e:
-            print(f"Listening error: {e}")
+            print(f"Ошибка слуха: {e}")
             return None
 
 def input_keyboard():
-    return input("\n👤 Enter text (or 'stop' to exit): ")
+    return input("\n👤 Введите текст (или 'стоп' для выхода): ")
 
-# --- INTERACTION WITH OLLAMA ---
+# --- ВЗАИМОДЕЙСТВИЕ С OLLAMA ---
 def ask_ollama_with_memory(user_input):
     global messages_history
     messages_history.append({'role': 'user', 'content': user_input})
@@ -127,7 +127,7 @@ def ask_ollama_with_memory(user_input):
             messages_history.append({'role': 'assistant', 'content': ai_answer})
         return ai_answer
     except Exception as e:
-        return f"An error occurred: {e}"
+        return f"Произошла ошибка мозга: {e}"
 
 def process_ai_command(response_text):
     clean_text = response_text.strip()
@@ -142,19 +142,19 @@ def main():
     global is_running
     setup_keyboard_shortcuts()
 
-    speak_silero("Control systems active. Awaiting commands.")
+    speak_silero("Системы управления активны. Жду приказов.")
 
     # Выбор режима ввода (голос/клавиатура)
-    print("\n=== SELECT INPUT MODE ===")
-    print("1. Voice input (microphone)")
-    print("2. Keyboard input")
+    print("\n=== ВЫБЕРИТЕ РЕЖИМ ВВОДА ===")
+    print("1. Голосовой ввод (микрофон)")
+    print("2. Ввод с клавиатуры")
     use_keyboard = False
     while True:
-        choice = input("Choose mode (1 or 2): ").strip()
+        choice = input("Выберите режим (1 или 2): ").strip()
         if choice in ['1', '2']:
             use_keyboard = choice == '2'
             break
-        print("Please enter 1 or 2")
+        print("Пожалуйста, введите 1 или 2")
 
     while is_running:
         if use_keyboard:
@@ -163,17 +163,17 @@ def main():
             query = listen()
 
         if query:
-            if any(cmd in query.lower() for cmd in ["stop", "exit", "bye", "enough"]):
-                speak_silero("Shutting down. Goodbye.")
+            if any(cmd in query.lower() for cmd in ["стоп", "выход", "пока", "хватит"]):
+                speak_silero("Отключаюсь. До связи.")
                 is_running = False
                 break
 
             # Переключение режима
-            if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
+            if any(cmd in query.lower() for cmd in ["переключи режим", "голос", "клавиатура", "микрофон"]):
                 use_keyboard = not use_keyboard
-                mode = "keyboard" if use_keyboard else "voice"
-                speak_silero(f"Switched to {mode} mode")
-                print(f"\n>>> Mode changed to: {mode}")
+                mode = "клавиатуры" if use_keyboard else "голоса"
+                speak_silero(f"Переключилась на режим {mode}")
+                print(f"\n>>> Режим изменен на: {mode}")
                 continue
 
             # Общение с Ollama
@@ -182,10 +182,10 @@ def main():
             # Проверяем, командный тег или обычный ответ
             final_answer = process_ai_command(llm_response)
 
-            # Speak the response
+            # Озвучиваем
             speak_silero(final_answer)
 
-    print("Shutting down.")
+    print("Завершение работы.")
 
 
 if __name__ == "__main__":
