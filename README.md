@@ -3,6 +3,7 @@ function easy math, say the text, write the text, mini control computers then vo
 WARNING!!!!!
 DON'T USE "?" WHEN YOU ASK MATH PROBLEMS USE JUST "2 + 2" DON"T USE "2 + 2?"
 
+WORK DOESN'T INTERNET
 
 so this is file will "readme" can be changed then time
 if you know how change code better, you can write in comments or fork idk
