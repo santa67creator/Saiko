@@ -3,6 +3,7 @@ import os
 import platform
 import webbrowser
 import threading
+import queue
 
 import torch
 import sounddevice as sd
@@ -10,6 +11,7 @@ import speech_recognition as sr
 import ollama
 import pyautogui
 import keyboard
+import numpy as np
 
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
@@ -25,6 +27,86 @@ model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
                               speaker='v3_en')
 model_tts.to(torch.device(SILERO_DEVICE))
 print(">>> Voice loaded. Assistant ready!")
+
+# --- AUDIO STREAMING CLASS ---
+class AudioStreamer:
+    def __init__(self, sample_rate):
+        self.sample_rate = sample_rate
+        self.audio_queue = queue.Queue()
+        self.stream = None
+        self.is_playing = threading.Event()
+        
+    def audio_callback(self, outdata, frames, time, status):
+        """Callback function for continuous audio stream"""
+        if status:
+            print(f"Audio status: {status}")
+        
+        try:
+            # Try to get audio chunk from queue
+            data = self.audio_queue.get_nowait()
+            
+            # Handle data size
+            if len(data) < len(outdata):
+                # Pad with zeros if not enough data
+                outdata[:len(data), 0] = data
+                outdata[len(data):, 0] = 0
+                self.is_playing.clear()  # Mark as finished
+            else:
+                # Fill output buffer
+                outdata[:, 0] = data[:len(outdata)]
+                # Put remaining data back in queue
+                remaining = data[len(outdata):]
+                if len(remaining) > 0:
+                    self.audio_queue.put(remaining)
+                else:
+                    self.is_playing.clear()
+                    
+        except queue.Empty:
+            # No data available, output silence
+            outdata[:, 0] = 0
+            self.is_playing.clear()
+    
+    def start(self):
+        """Start the continuous audio stream"""
+        self.stream = sd.OutputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            callback=self.audio_callback,
+            blocksize=2048,
+            dtype='float32'
+        )
+        self.stream.start()
+        print("🔊 Audio stream started")
+    
+    def speak(self, text):
+        """Queue audio for playback"""
+        if not text:
+            return
+        
+        print(f"🔊 Assistant: {text}")
+        
+        # Generate audio
+        audio = model_tts.apply_tts(text=text, speaker=SPEAKER, sample_rate=self.sample_rate)
+        audio_data = audio.numpy().astype(np.float32)
+        
+        # Add to queue
+        self.is_playing.set()
+        self.audio_queue.put(audio_data)
+    
+    def wait_until_done(self):
+        """Wait until all audio has been played"""
+        while self.is_playing.is_set() or not self.audio_queue.empty():
+            threading.Event().wait(0.1)
+    
+    def stop(self):
+        """Stop the audio stream"""
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+            print("🔊 Audio stream stopped")
+
+# Initialize global audio streamer
+audio_streamer = AudioStreamer(SAMPLE_RATE)
 
 # --- MEMORY AND PROMPT ---
 system_prompt = """
@@ -86,13 +168,9 @@ def setup_keyboard_shortcuts():
 
 # --- TTS / ASR ---
 def speak_silero(text):
-    if not text:
-        return
-    print(f"🔊 Assistant: {text}")
-    audio = model_tts.apply_tts(text=text, speaker=SPEAKER, sample_rate=SAMPLE_RATE)
-    sd.play(audio.numpy(), SAMPLE_RATE)
-    sd.wait()
-    sd.stop()
+    """Use the audio streamer instead of direct sd.play"""
+    audio_streamer.speak(text)
+    audio_streamer.wait_until_done()
 
 def listen():
     r = sr.Recognizer()
@@ -141,6 +219,9 @@ def process_ai_command(response_text):
 def main():
     global is_running
     setup_keyboard_shortcuts()
+    
+    # Start the audio stream
+    audio_streamer.start()
 
     speak_silero("Control systems active. Awaiting commands.")
 
@@ -156,36 +237,40 @@ def main():
             break
         print("Please enter 1 or 2")
 
-    while is_running:
-        if use_keyboard:
-            query = input_keyboard()
-        else:
-            query = listen()
+    try:
+        while is_running:
+            if use_keyboard:
+                query = input_keyboard()
+            else:
+                query = listen()
 
-        if query:
-            if any(cmd in query.lower() for cmd in ["stop", "exit", "bye", "enough"]):
-                speak_silero("Shutting down. Goodbye.")
-                is_running = False
-                break
+            if query:
+                if any(cmd in query.lower() for cmd in ["stop", "exit", "bye", "enough"]):
+                    speak_silero("Shutting down. Goodbye.")
+                    is_running = False
+                    break
 
-            # Переключение режима
-            if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
-                use_keyboard = not use_keyboard
-                mode = "keyboard" if use_keyboard else "voice"
-                speak_silero(f"Switched to {mode} mode")
-                print(f"\n>>> Mode changed to: {mode}")
-                continue
+                # Переключение режима
+                if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
+                    use_keyboard = not use_keyboard
+                    mode = "keyboard" if use_keyboard else "voice"
+                    speak_silero(f"Switched to {mode} mode")
+                    print(f"\n>>> Mode changed to: {mode}")
+                    continue
 
-            # Общение с Ollama
-            llm_response = ask_ollama_with_memory(query)
+                # Общение с Ollama
+                llm_response = ask_ollama_with_memory(query)
 
-            # Проверяем, командный тег или обычный ответ
-            final_answer = process_ai_command(llm_response)
+                # Проверяем, командный тег или обычный ответ
+                final_answer = process_ai_command(llm_response)
 
-            # Speak the response
-            speak_silero(final_answer)
+                # Speak the response
+                speak_silero(final_answer)
 
-    print("Shutting down.")
+    finally:
+        # Clean shutdown
+        audio_streamer.stop()
+        print("Shutting down.")
 
 
 if __name__ == "__main__":
