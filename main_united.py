@@ -92,7 +92,8 @@ class AudioStreamer:
         # Add to queue
         self.is_playing.set()
         self.audio_queue.put(audio_data)
-    
+        
+   
     def wait_until_done(self):
         """Wait until all audio has been played"""
         while self.is_playing.is_set() or not self.audio_queue.empty():
@@ -207,6 +208,45 @@ def ask_ollama_with_memory(user_input):
     except Exception as e:
         return f"An error occurred: {e}"
 
+def pronounce_number_in_text(text):
+    """Convert all digits in text to spoken words"""
+    number_words = {
+        "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+        "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"
+    }
+    result = text
+    for digit, word in number_words.items():
+        result = result.replace(digit, word)
+    return result
+
+def calculate_math(query):
+    """Detect and calculate math expressions with pronounced numbers"""
+    import re
+    # Pattern for simple math: "what is X + Y", "how much is X - Y", "X + Y", etc.
+    math_patterns = [
+        r'(?:what is|how much is|calculate|compute)\s+([\d+\-*/ ()]+)(?:\s*[?])?',
+        r'^([\d+\-*/ ()]+)$',
+        r'([\d+\-*/ ()]+)\s*[=]?$'
+    ]
+    
+    for pattern in math_patterns:
+        match = re.search(pattern, query.lower())
+        if match:
+            expression = match.group(1).strip()
+            # Basic validation - only allow digits, operators, and spaces
+            if re.match(r'^[\d+\-*/.() ]+$', expression):
+                try:
+                    result = eval(expression)
+                    # Format the answer
+                    if isinstance(result, float) and result.is_integer():
+                        result = int(result)
+                    # Pronounce the result
+                    pronounced_result = pronounce_number_in_text(str(result))
+                    return f"The answer is {pronounced_result}"
+                except:
+                    return None
+    return None
+
 def process_ai_command(response_text):
     clean_text = response_text.strip()
     if clean_text in commands:
@@ -258,11 +298,17 @@ def main():
                     print(f"\n>>> Mode changed to: {mode}")
                     continue
 
-                # Общение с Ollama
-                llm_response = ask_ollama_with_memory(query)
+                # Check for math expressions first
+                math_result = calculate_math(query)
+                if math_result:
+                    final_answer = math_result
+                    print(f"🧮 Math: {query} = {math_result}")
+                else:
+                    # Общение с Ollama
+                    llm_response = ask_ollama_with_memory(query)
 
-                # Проверяем, командный тег или обычный ответ
-                final_answer = process_ai_command(llm_response)
+                    # Проверяем, командный тег или обычный ответ
+                    final_answer = process_ai_command(llm_response)
 
                 # Speak the response
                 speak_silero(final_answer)
