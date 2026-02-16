@@ -1,4 +1,4 @@
-this is full own assistent, Assitent for local computers, need Ollama and library and model kind of gpt, gemma, llama or own model 
+this is full own assistent, Assitent for local computers, need <a href="https://ollama.com/">Ollama</a> and library and model kind of gpt, gemma, llama or own model 
 
 function easy math, say the text, write the text, mini control computers then voice and keyboard "open notepad", "open browser", and respond on the answer,
 
