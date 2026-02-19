@@ -208,25 +208,43 @@ def ask_ollama_with_memory(user_input):
     except Exception as e:
         return f"An error occurred: {e}"
 
+
+#--- MAIN MATH LOGIC ---
 def pronounce_number_in_text(text):
-    """Convert all digits in text to spoken words"""
+    """Convert all digits in text to spoken words, including decimals.
+
+    Examples:
+        12 -> one two
+        3.5 -> three point five
+        -4.2 -> minus four point two
+    """
     number_words = {
         "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
         "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"
     }
-    result = text
-    for digit, word in number_words.items():
-        result = result.replace(digit, word)
-    return result
+    result_chars = []
+    for ch in text:
+        if ch in number_words:
+            result_chars.append(number_words[ch])
+        elif ch == ".":
+            result_chars.append("point")
+        elif ch == "-":
+            result_chars.append("minus")
+        else:
+            # keep other characters (e.g. spaces)
+            result_chars.append(ch)
+    # join and collapse any duplicate spaces that may have been introduced
+    result = " ".join(result_chars).replace("  ", " ")
+    return result.strip()
 
 def calculate_math(query):
     """Detect and calculate math expressions with pronounced numbers"""
     import re
     # Pattern for simple math: "what is X + Y", "how much is X - Y", "X + Y", etc.
     math_patterns = [
-        r'(?:what is|how much is|calculate|compute)\s+([\d+\-*/ ()]+)(?:\s*[?])?',
-        r'^([\d+\-*/ ()]+)$',
-        r'([\d+\-*/ ()]+)\s*[=]?$'
+        r'(?:what is|how much is|calculate|compute)\s+([\d+\-*/ ().]+)(?:\s*[?])?',
+        r'^([\d+\-*/ ().]+)$',
+        r'([\d+\-*/ ().]+)\s*[=]?$'
     ]
     
     for pattern in math_patterns:
@@ -238,8 +256,11 @@ def calculate_math(query):
                 try:
                     result = eval(expression)
                     # Format the answer
-                    if isinstance(result, float) and result.is_integer():
-                        result = int(result)
+                    if isinstance(result, float):
+                        # Round to avoid long floating-point representations
+                        result = round(result, 6)
+                        if result.is_integer():
+                            result = int(result)
                     # Pronounce the result
                     pronounced_result = pronounce_number_in_text(str(result))
                     return f"The answer is {pronounced_result}"
