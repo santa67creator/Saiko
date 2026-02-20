@@ -113,12 +113,25 @@ audio_streamer = AudioStreamer(SAMPLE_RATE)
 # --- MEMORY AND PROMPT ---
 system_prompt = """
 You are a voice assistant. You control the computer and respond in English.
-If the user asks to perform an action from the list below, return ONLY the special command tag:
-- Open browser -> {{OPEN_BROWSER}}
-- Open notepad -> {{OPEN_NOTEPAD}}
-- Increase volume -> {{VOLUME_UP}}
-- Decrease volume -> {{VOLUME_DOWN}}
-If there is no action to perform — reply briefly (no more than 2 sentences).
+
+IMPORTANT:
+Match user commands EXACTLY and LITERALLY based on the rules below.
+Do NOT guess. Do NOT reinterpret. Only match exact intent.
+
+Return ONLY the special command tag if the user requests the action.
+Do NOT include any extra text.
+
+Rules:
+- If the user says a phrase containing "increase volume" → return {{VOLUME_UP}}
+- If the user says a phrase containing "volume up" → return {{VOLUME_UP}}
+
+- If the user says a phrase containing "decrease volume" → return {{VOLUME_DOWN}}
+- If the user says a phrase containing "volume down" → return {{VOLUME_DOWN}}
+
+- If the user says "open browser" or "browser" → return {{OPEN_BROWSER}}
+- If the user says "open notepad" or "notepad" → return {{OPEN_NOTEPAD}}
+
+If none of the above apply, reply briefly in 1-2 sentences.
 """
 
 messages_history = [
@@ -155,6 +168,7 @@ commands = {
     "{{VOLUME_UP}}": volume_up,
     "{{VOLUME_DOWN}}": volume_down
 }
+
 
 is_running = True
 
@@ -202,9 +216,8 @@ def ask_ollama_with_memory(user_input):
     try:
         response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history)
         ai_answer = response['message']['content']
-        # Не добавляем командные теги в историю
-        if "{{" not in ai_answer:
-            messages_history.append({'role': 'assistant', 'content': ai_answer})
+        # Don't add command tags to history
+        messages_history.append({'role': 'assistant', 'content': ai_answer})
         return ai_answer
     except Exception as e:
         return f"An error occurred: {e}"
@@ -287,7 +300,7 @@ def main():
 
     speak_silero("Control systems active. Awaiting commands.")
 
-    # Выбор режима ввода (голос/клавиатура)
+    # choice mode input (voice/keyboard)
     print("\n=== SELECT INPUT MODE ===")
     print("1. Voice input (microphone)")
     print("2. Keyboard input")
@@ -312,7 +325,7 @@ def main():
                     is_running = False
                     break
 
-                # Переключение режима
+                # change mode
                 if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
                     use_keyboard = not use_keyboard
                     mode = "keyboard" if use_keyboard else "voice"
@@ -326,10 +339,10 @@ def main():
                     final_answer = math_result
                     print(f"🧮 Math: {query} = {math_result}")
                 else:
-                    # Общение с Ollama
+                    # talk to Ollama
                     llm_response = ask_ollama_with_memory(query)
 
-                    # Проверяем, командный тег или обычный ответ
+                    # check, command tag or normal response
                     final_answer = process_ai_command(llm_response)
 
                 # Speak the response
