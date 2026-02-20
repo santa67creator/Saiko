@@ -69,10 +69,11 @@ class AudioStreamer:
     def start(self):
         """Start the continuous audio stream"""
         self.stream = sd.OutputStream(
+           # device=18, # Specify your output device index here
             samplerate=self.sample_rate,
             channels=1,
             callback=self.audio_callback,
-            blocksize=2048,
+            blocksize=512,
             dtype='float32'
         )
         self.stream.start()
