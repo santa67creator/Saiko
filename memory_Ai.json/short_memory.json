@@ -1,0 +1,17 @@
+{
+    
+  "chat_recent": [],
+  "last_user_message": "",
+  "last_ai_message": "",
+  
+  "current_emotion": "neutral",
+  "current_topic": "",
+  
+  "context_window": 10,
+
+
+  "conversation_context": [],
+  "current_task": null,
+  "assistant_mood": "neutral"
+
+}
