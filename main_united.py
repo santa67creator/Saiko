@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 import platform
@@ -15,7 +16,7 @@ import numpy as np
 
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
-SILERO_DEVICE = "cpu"
+SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
 
@@ -71,9 +72,9 @@ class AudioStreamer:
         self.stream = sd.OutputStream(
            # device=18, # Specify your output device index here
             samplerate=self.sample_rate,
-            channels=1,
+            channels=1, # Mono output
             callback=self.audio_callback,
-            blocksize=512,
+            blocksize=512, # 256 or 512 is usually good for low-latency streaming
             dtype='float32'
         )
         self.stream.start()
@@ -111,6 +112,15 @@ class AudioStreamer:
 audio_streamer = AudioStreamer(SAMPLE_RATE)
 
 # --- MEMORY AND PROMPT ---
+
+def load_memory():
+    """Load memory from file if exists, otherwise return empty list"""
+    if os.path.exists("memory.json"):
+        with open("memory.json", "r") as f:
+            return json.load(f)
+    return []
+
+
 system_prompt = """
 You are a voice assistant. You control the computer and respond in English.
 
