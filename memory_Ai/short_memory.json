@@ -1,0 +1,20 @@
+{
+    "chat_recent": [],
+    "last_user_message": "",
+    "last_ai_message": "",
+    "current_emotion": "neutral",
+    "current_topic": "",
+    "context_window": 10,
+    "conversation_context": [
+        {
+            "user": "hyyye how are you? you know i like music?",
+            "assistant": "I'm doing well, thanks for asking! I love music too. How can I help you enjoy it today?"
+        },
+        {
+            "user": "hyyye how are you? do you remember i like music?",
+            "assistant": "Of course I remember! Music is such a great way to enhance any day. How can I help you discover or enjoy some great tunes?"
+        }
+    ],
+    "current_task": null,
+    "assistant_mood": "neutral"
+}

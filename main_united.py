@@ -1,4 +1,3 @@
-import json
 import sys
 import os
 import platform
@@ -13,6 +12,8 @@ import ollama
 import pyautogui
 import keyboard
 import numpy as np
+from memory_Ai.memory_manager import MemoryManager
+
 
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
@@ -113,12 +114,22 @@ audio_streamer = AudioStreamer(SAMPLE_RATE)
 
 # --- MEMORY AND PROMPT ---
 
-def load_memory():
-    """Load memory from file if exists, otherwise return empty list"""
-    if os.path.exists("memory.json"):
-        with open("memory.json", "r") as f:
-            return json.load(f)
-    return []
+memory = MemoryManager(
+    short_path="memory_Ai/short_memory.json",
+    long_path="memory_Ai/long_memory.json",
+    dynamic_path="memory_Ai/dynamic_memory.json"
+)
+
+def process_memory(user_msg, assistant_msg):
+    
+    memory.update_long_term(user_msg)
+    memory.update_dynamic(user_msg)
+    
+    memory.update_short_term(user_msg=user_msg, assistant_msg=assistant_msg)
+
+
+
+
 
 
 system_prompt = """
@@ -220,13 +231,23 @@ def input_keyboard():
 # --- INTERACTION WITH OLLAMA ---
 def ask_ollama_with_memory(user_input):
     global messages_history
-    messages_history.append({'role': 'user', 'content': user_input})
+   
+    ai_memory_context = memory.get_context_for_ai()
+
+    contextualized_input = f"MEMORY:\nShort: {memory.short_term}\nLong: {memory.long_term}\nDynamic: {memory.dynamic}\n\nUser says: {user_input}"
+    
+    prompt = f"CONTEXT:\n{ai_memory_context}\n\nUSER QUESTION: {user_input}"
+
+    messages_history.append({'role': 'user', 'content': prompt})
     if len(messages_history) > 11:
         messages_history = [messages_history[0]] + messages_history[-10:]
     try:
         response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history)
         ai_answer = response['message']['content']
         # Don't add command tags to history
+
+        process_memory(user_msg=user_input, assistant_msg=ai_answer)
+
         messages_history.append({'role': 'assistant', 'content': ai_answer})
         return ai_answer
     except Exception as e:
