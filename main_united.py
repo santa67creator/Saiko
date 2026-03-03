@@ -1,13 +1,16 @@
+import json
 import sys
 import os
+import tempfile
 import platform
+import wave
 import webbrowser
 import threading
 import queue
 
 import torch
 import sounddevice as sd
-import speech_recognition as sr
+import subprocess
 import ollama
 import pyautogui
 import keyboard
@@ -15,11 +18,23 @@ import numpy as np
 from memory_Ai.memory_manager import MemoryManager
 
 
+
+def compress_memory(mem):
+    if isinstance(mem, dict):
+        return " | ".join(f"{k}: {compress_memory(v)}" for k, v in mem.items())
+    if isinstance(mem, list):
+        return " | ".join(mem)
+    return str(mem)
+
+
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
 SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
+
+WHISPER_PATH = "./Whisper/Release/main.exe"  # Path to the whisper.cpp executable
+WHISPER_MODEL = "./Whisper/ggml-base.en.bin"  # Path to your local Whisper model file
 
 # --- TTS MODEL ---
 print(">>> Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
@@ -114,6 +129,7 @@ audio_streamer = AudioStreamer(SAMPLE_RATE)
 
 # --- MEMORY AND PROMPT ---
 
+# create a MemoryManager instance (module exports the class)
 memory = MemoryManager(
     short_path="memory_Ai/short_memory.json",
     long_path="memory_Ai/long_memory.json",
@@ -121,16 +137,9 @@ memory = MemoryManager(
 )
 
 def process_memory(user_msg, assistant_msg):
-    
     memory.update_long_term(user_msg)
     memory.update_dynamic(user_msg)
-    
     memory.update_short_term(user_msg=user_msg, assistant_msg=assistant_msg)
-
-
-
-
-
 
 system_prompt = """
 You are a voice assistant. You control the computer and respond in English.
@@ -209,21 +218,41 @@ def speak_silero(text):
     audio_streamer.speak(text)
     audio_streamer.wait_until_done()
 
+def save_wav(path, audio_data, SAMPLE_RATE):
+    audio_int16 = np.int16(audio_data * 32767)
+
+    with wave.open(path, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(audio_int16.tobytes())
+
 def listen():
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("\n🎤 Listening...")
-        r.adjust_for_ambient_noise(source, duration=0.5)
-        try:
-            audio = r.listen(source, timeout=5, phrase_time_limit=15)
-            query = r.recognize_google(audio, language="en-US")
-            print(f" You: {query}")
-            return query
-        except sr.UnknownValueError:
-            return None
-        except Exception as e:
-            print(f"Listening error: {e}")
-            return None
+    print("\n🎤 Listening... (speak now)")
+
+    duration = 0.8  # seconds
+    audio = sd.rec(int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='float32')
+    sd.wait()  # Wait until recording is finished
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = tmp.name
+
+    save_wav(wav_path, audio, SAMPLE_RATE)
+
+    result = subprocess.run([WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en" ], capture_output=True, text=True)
+
+    text = result.stdout.strip()
+
+    if "result:" in text.lower():
+        text = text.split("result:")[-1].strip()
+
+    if text:
+        print(f"🎤 You said: {text}")
+        return text
+    
+    return None
+
+
 
 def input_keyboard():
     return input("\n👤 Enter text (or 'stop' to exit): ")
@@ -232,24 +261,49 @@ def input_keyboard():
 def ask_ollama_with_memory(user_input):
     global messages_history
    
+    # get context from the instance we created earlier
     ai_memory_context = memory.get_context_for_ai()
 
-    contextualized_input = f"MEMORY:\nShort: {memory.short_term}\nLong: {memory.long_term}\nDynamic: {memory.dynamic}\n\nUser says: {user_input}"
-    
-    prompt = f"CONTEXT:\n{ai_memory_context}\n\nUSER QUESTION: {user_input}"
+    full_prompt = f"""
+    You are an AI assistant. Use MEMORY to maintain consistency.
 
-    messages_history.append({'role': 'user', 'content': prompt})
+    --- MEMORY ---
+    Short-term: {json.dumps(memory.short_term, ensure_ascii=False, indent=2)}
+    Long-term: {json.dumps(memory.long_term, ensure_ascii=False, indent=2)}
+    Dynamic: {json.dumps(memory.dynamic, ensure_ascii=False, indent=2)}
+
+    --- PROCESSED MEMORY (SUMMARY) ---
+{ai_memory_context}
+
+    --- USER MESSAGE ---
+{user_input}
+
+    Respond naturally based on MEMORY.
+    """
+
+    messages_history.append({'role': 'user', 'content': full_prompt})
     if len(messages_history) > 11:
         messages_history = [messages_history[0]] + messages_history[-10:]
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history)
-        ai_answer = response['message']['content']
+        response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history, stream=True)
+
+        ai_answer = "" # we will build the answer as it streams in
+
+        for chunk in response:
+            if 'message' in chunk and 'content' in chunk['message']:
+                content = chunk['message']['content']
+                ai_answer += content
+                print(content, end='', flush=True)
+                
+        print() # for newline after response is done
+        
         # Don't add command tags to history
 
         process_memory(user_msg=user_input, assistant_msg=ai_answer)
 
         messages_history.append({'role': 'assistant', 'content': ai_answer})
         return ai_answer
+    
     except Exception as e:
         return f"An error occurred: {e}"
 
@@ -257,7 +311,6 @@ def ask_ollama_with_memory(user_input):
 #--- MAIN MATH LOGIC ---
 def pronounce_number_in_text(text):
     """Convert all digits in text to spoken words, including decimals.
-
     Examples:
         12 -> one two
         3.5 -> three point five
@@ -373,7 +426,7 @@ def main():
                     # talk to Ollama
                     llm_response = ask_ollama_with_memory(query)
 
-                    # check, command tag or normal response
+# check, command tag or normal response
                     final_answer = process_ai_command(llm_response)
 
                 # Speak the response
