@@ -4,8 +4,10 @@ import os
 class MemoryManager:
     def __init__(self, short_path="short_memory.json",
                  long_path="long_memory.json",
-                 dynamic_path="dynamic_memory.json"):
+                 dynamic_path="dynamic_memory.json"
+                 ):
         
+        self.run_count = 0
         self.short_path = short_path
         self.long_path = long_path
         self.dynamic_path = dynamic_path
@@ -64,10 +66,11 @@ class MemoryManager:
             "observations": [],
             "learned_patterns": []
         }
-
+        self.run_count = self.long_term.get("run_count", 0)
     # ---- Save all ----
 
     def save_memory(self):
+        self.long_term["run_count"] = self.run_count
         self._save_json(self.short_path, self.short_term)
         self._save_json(self.long_path, self.long_term)
         self._save_json(self.dynamic_path, self.dynamic)
@@ -95,9 +98,96 @@ class MemoryManager:
             self.long_term["user_profile"]["name"] = name
             self.save_memory()
 
+        important_patterns = ["i like", "i dislike", "my favorite", "i want", "i love", "my hobby", "i prefer",
+        "i hate", "i don't like", "my goal", "i want to be",
+        "i like to", "i study", "i am learning", "i enjoy"]
+
+        for pattern in important_patterns:
+            if pattern in t:
+                self.long_term.setdefault("facts", {})
+                self.long_term["facts"].setdefault("important_info", [])
+                self.long_term["facts"]["important_info"].append(text)
+                # Keep only last 20 important info pieces
+                self.long_term["facts"]["important_info"] = \
+                    self.long_term["facts"]["important_info"][-50:]
+                self.save_memory()
+                break
+
+        self.run_count += 1
+
+        if self.run_count % 5 == 0:  # Every 5 runs, trim memory
+            self.trim_memory()
+            print("Memory trimmed to prevent overload.")
+
+
     # ---- Update dynamic ----
 
     def update_dynamic(self, text):
         self.dynamic["observations"].append(text)
         self.dynamic["observations"] = self.dynamic["observations"][-50:]
+        self.save_memory()
+
+
+
+    def trim_memory(self):
+        """Auto-clean memory to prevent overload."""
+
+
+        if "facts" in self.long_term and "important_info" in self.long_term["facts"]:
+            facts = self.long_term["facts"]["important_info"]
+            cleaned_info = []
+
+            
+            for info in facts:
+                if info and info.strip() == "":  # Skip empty facts
+                    continue
+
+                if len(info) > 250:  # Limit to 250 characters
+                    info = info[:200] + "..."  # Truncate long facts
+                cleaned_info.append(info)
+
+
+
+            seen = set()
+            unique_info = []
+            for info in cleaned_info:
+                if info not in seen:
+                    unique_info.append(info)
+                    seen.add(info)
+
+
+            self.long_term["facts"]["important_info"] = unique_info[-100:]  # Final limit to 100 unique important facts
+            
+        # CLEAN DYNAMIC MEMORY OBS
+        if "observations" in self.dynamic:
+            obs = self.dynamic["observations"]
+            cleaned_obs = []
+            for o in obs:
+                if o and o.strip() != "":
+                    cleaned_obs.append(o)
+
+            # Remove duplicates while preserving order
+            unique_obs = []
+            seen_obs = set()
+            for o in cleaned_obs:
+                if o not in seen_obs:
+                    unique_obs.append(o)
+                    seen_obs.add(o)
+
+            self.dynamic["observations"] = unique_obs[-100:]  # Keep last 100 unique observations
+
+        # This can be called periodically to trim memory if it grows too large
+        # CLEAN SHORT-TERM MEMORY
+        if "conversation_context" in self.short_term:
+
+            ctx = self.short_term["conversation_context"]
+            #remove empty messages or invalid entries
+            
+            cleaned_ctx = [ 
+                m for m in ctx
+                if m.get("user") or m.get("assistant")  # Keep if either user or assistant message exists
+            ]
+
+            self.short_term["conversation_context"] = self.short_term["conversation_context"][-30:]
+
         self.save_memory()
