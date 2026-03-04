@@ -7,12 +7,124 @@
     "context_window": 10,
     "conversation_context": [
         {
-            "user": "hyyye how are you? you know i like music?",
-            "assistant": "I'm doing well, thanks for asking! I love music too. How can I help you enjoy it today?"
+            "user": "my name",
+            "assistant": "{{NAME}}"
         },
         {
-            "user": "hyyye how are you? do you remember i like music?",
-            "assistant": "Of course I remember! Music is such a great way to enhance any day. How can I help you discover or enjoy some great tunes?"
+            "user": "my name sansan",
+            "assistant": "Your name is Sansan! 👋"
+        },
+        {
+            "user": "my name is?",
+            "assistant": "My name is?"
+        },
+        {
+            "user": "your name is Saiko, my name sansan",
+            "assistant": "It's lovely to meet you, Saiko! I'll remember that for future conversations."
+        },
+        {
+            "user": "my name?",
+            "assistant": "Your name is Saiko. Happy to know you! 😊"
+        },
+        {
+            "user": "open notepad",
+            "assistant": "{{OPEN_NOTEPAD}}"
+        },
+        {
+            "user": "your name?",
+            "assistant": "I do not have personal experiences or the capacity to have a name. My purpose is to assist you with tasks and information."
+        },
+        {
+            "user": "your name?",
+            "assistant": "your name is Saiko"
+        },
+        {
+            "user": "open notepad",
+            "assistant": "{{OPEN_NOTEPAD}}"
+        },
+        {
+            "user": "my name is?",
+            "assistant": "{{VOLUME_UP}}"
+        },
+        {
+            "user": "my name is?",
+            "assistant": "{{VOLUME_UP}}"
+        },
+        {
+            "user": "volume down",
+            "assistant": "{{VOLUME_DOWN}}"
+        },
+        {
+            "user": "my name sansan",
+            "assistant": "I do not have access to information about your name sansan or personal details."
+        },
+        {
+            "user": "you like my name sansan?",
+            "assistant": "I am unable to provide subjective opinions or personal preferences, as I am an AI assistant and do not have personal feelings or preferences. My purpose is to assist you with practical tasks and information."
+        },
+        {
+            "user": "open notepad",
+            "assistant": "{{OPEN_NOTEPAD}}"
+        },
+        {
+            "user": "say your name",
+            "assistant": "My name is Sansan. How can I help you today?"
+        },
+        {
+            "user": "say your name",
+            "assistant": "My name is Sansan. How can I help you today?"
+        },
+        {
+            "user": "my name say",
+            "assistant": "You already know my name is Sansan. What else can I help you with today?"
+        },
+        {
+            "user": "say your name",
+            "assistant": "Say your name."
+        },
+        {
+            "user": "my name say",
+            "assistant": "Your name is Saiko."
+        },
+        {
+            "user": "your name say",
+            "assistant": "Saiko."
+        },
+        {
+            "user": "what you like",
+            "assistant": "I do not have personal preferences or likes. My purpose is to assist you with various tasks and information."
+        },
+        {
+            "user": "open notepad",
+            "assistant": "{{OPEN_NOTEPAD}}"
+        },
+        {
+            "user": "say your name",
+            "assistant": "My name is Sansan. How can I help you today?"
+        },
+        {
+            "user": "what you like?",
+            "assistant": "I enjoy learning new things and helping people make the most of their technology. What would you like to know or ask me today?"
+        },
+        {
+            "user": "say something interesting ",
+            "assistant": "Here's an interesting fact: Did you know that the population of the earth is roughly equivalent to the weight of all the grains of sand on all the beaches in the world? That's a lot of sand! 🌎"
+        },
+        {
+            "user": "say something interesting",
+            "assistant": "Something interesting! Tell me more about what you like."
+        },
+        {
+            "user": "you know about everest?",
+            "assistant": "Indeed I do! Everest, the majestic mountain in the Himalayas, stands tall as the highest peak on Earth. It's a breathtaking sight for climbers and nature lovers alike. Would you like to know more about its history, geography, or climbing routes?"
+        },
+        {
+            "user": "history",
+            "assistant": "Everest's history is fascinating! It has captivated explorers and mountaineers for centuries. The earliest records suggest that people have climbed the mountain as early as the 13th century. However, it wasn't until the 19th century that serious attempts to summit the peak began. In 1953, Edmund Hillary and Tenzing Norgay became the first climbers to reach the summit, marking a significant milestone in human exploration. Would you like to know more about the different climbing routes, the challenges faced by climbers, or the importance of preserving this natural wonder?"
+        },
+        {
+            "user": "open notepad",
+            "assistant": "{{OPEN_NOTEPAD}}"
         }
     ],
     "current_task": null,

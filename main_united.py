@@ -1,4 +1,4 @@
-import json
+from email.mime import text
 import sys
 import os
 import tempfile
@@ -8,6 +8,7 @@ import webbrowser
 import threading
 import queue
 
+import re
 import torch
 import sounddevice as sd
 import subprocess
@@ -16,8 +17,6 @@ import pyautogui
 import keyboard
 import numpy as np
 from memory_Ai.memory_manager import MemoryManager
-
-
 
 def compress_memory(mem):
     if isinstance(mem, dict):
@@ -33,8 +32,17 @@ SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary 
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
 
-WHISPER_PATH = "./Whisper/Release/main.exe"  # Path to the whisper.cpp executable
+WHISPER_PATH = "./Whisper/Release/whisper-cli.exe"  # Path to your local Whisper CLI executable
 WHISPER_MODEL = "./Whisper/ggml-base.en.bin"  # Path to your local Whisper model file
+
+
+#--- VAD SETTINGS ---
+VAD_CHUNK_DURATION = 0.5  # seconds
+VAD_SILENCE_THRESHOLD = 0.01  # Adjust this threshold based on your environment (lower is more sensitive)
+VAD_SILENCE_SECS = 1.0  # seconds of silence to consider the end of speech
+VAD_MAX_SECS = 10.0  # maximum recording length to prevent infinite recording
+VAD_MIN_SPEECH_SECS = 0.3  # minimum length of speech to consider valid
+
 
 # --- TTS MODEL ---
 print(">>> Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
@@ -53,6 +61,37 @@ class AudioStreamer:
         self.stream = None
         self.is_playing = threading.Event()
         
+        # Single worker thread — processes sentences ONE BY ONE, no overlap
+        self._tts_queue = queue.Queue()
+        self._tts_busy = False
+        self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+        self._tts_thread.start()
+        self.lock = threading.Lock()
+
+    def _tts_worker(self):
+        """Generate PCM one sentence at a time prevents overlap"""
+        fade = int(0.05 * self.sample_rate)  # 50ms fade
+        while True:
+            sentence = self._tts_queue.get()
+            if sentence is None:
+                break  # Sentinel to stop the thread
+            
+            try:
+                self._tts_busy = True
+                audio = model_tts.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
+                audio_data = audio.numpy().astype(np.float32)
+
+            # Apply fade in/out
+                if len(audio_data) > 2 * fade:
+                    audio_data[:fade] *= np.linspace(0, 1, fade)
+                    audio_data[-fade:] *= np.linspace(1, 0, fade)
+                self.is_playing.set()
+                self.audio_queue.put(audio_data)
+                
+            finally:
+                self._tts_busy = False
+                self._tts_queue.task_done()
+        
     def audio_callback(self, outdata, frames, time, status):
         """Callback function for continuous audio stream"""
         if status:
@@ -67,7 +106,8 @@ class AudioStreamer:
                 # Pad with zeros if not enough data
                 outdata[:len(data), 0] = data
                 outdata[len(data):, 0] = 0
-                self.is_playing.clear()  # Mark as finished
+                if self.audio_queue.empty() and not self._tts_busy:    
+                    self.is_playing.clear()
             else:
                 # Fill output buffer
                 outdata[:, 0] = data[:len(outdata)]
@@ -75,13 +115,11 @@ class AudioStreamer:
                 remaining = data[len(outdata):]
                 if len(remaining) > 0:
                     self.audio_queue.put(remaining)
-                else:
-                    self.is_playing.clear()
-                    
         except queue.Empty:
             # No data available, output silence
             outdata[:, 0] = 0
-            self.is_playing.clear()
+            if self._tts_queue.empty() and not self._tts_busy:
+                self.is_playing.clear()
     
     def start(self):
         """Start the continuous audio stream"""
@@ -90,35 +128,38 @@ class AudioStreamer:
             samplerate=self.sample_rate,
             channels=1, # Mono output
             callback=self.audio_callback,
-            blocksize=512, # 256 or 512 is usually good for low-latency streaming
+            blocksize=4096, # 256 or 512 is usually good for low-latency streaming
             dtype='float32'
         )
         self.stream.start()
         print("🔊 Audio stream started")
     
     def speak(self, text):
-        """Queue audio for playback"""
+        """Queue audio for playback, no overlap."""
         if not text:
             return
         
+        text = strip_unsupported_chars(text)
+
         print(f"🔊 Assistant: {text}")
-        
-        # Generate audio
-        audio = model_tts.apply_tts(text=text, speaker=SPEAKER, sample_rate=self.sample_rate)
-        audio_data = audio.numpy().astype(np.float32)
-        
-        # Add to queue
-        self.is_playing.set()
-        self.audio_queue.put(audio_data)
-        
+         # No overlap wait for previous voice to fully end
+        with self.lock:
+            self._tts_queue.put(text)
+            self._tts_queue.join()
+
+        # Wait until callback drains the audio
+            while self.is_playing.is_set() or not self.audio_queue.empty():
+                threading.Event().wait(0.05)        
    
     def wait_until_done(self):
         """Wait until all audio has been played"""
+        self._tts_queue.join()  # Wait until all TTS tasks are done
         while self.is_playing.is_set() or not self.audio_queue.empty():
             threading.Event().wait(0.1)
     
     def stop(self):
         """Stop the audio stream"""
+        self._tts_queue.put(None)  # Sentinel to stop TTS thread
         if self.stream:
             self.stream.stop()
             self.stream.close()
@@ -212,6 +253,30 @@ def setup_keyboard_shortcuts():
     keyboard.add_hotkey('ctrl+q', lambda: toggle_exit())
     print("   Ctrl+Q - exit")
 
+
+def strip_unsupported_chars(text: str) -> str:
+    # delete emoji,  Unicode
+    emoji_pattern = re.compile(
+        "[" 
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002700-\U000027BF"  # dingbats
+        "\U0001F900-\U0001F9FF"  # supplemental symbols
+        "\U0001FA70-\U0001FAFF"  # Symbols Extended-A
+        "]+", 
+        flags=re.UNICODE
+    )
+    text = emoji_pattern.sub("", text)
+    
+    # delete non-ASCII characters (except for regular letters and punctuation)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    
+    # if string is empty — return at least "."
+    return text.strip() or "."
+
+
 # --- TTS / ASR ---
 def speak_silero(text):
     """Use the audio streamer instead of direct sd.play"""
@@ -230,34 +295,47 @@ def save_wav(path, audio_data, SAMPLE_RATE):
 def listen():
     print("\n🎤 Listening... (speak now)")
 
-    duration = 0.8  # seconds
+    duration = 2  # seconds
     audio = sd.rec(int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='float32')
     sd.wait()  # Wait until recording is finished
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         wav_path = tmp.name
 
-    save_wav(wav_path, audio, SAMPLE_RATE)
+    try:
+        save_wav(wav_path, audio, SAMPLE_RATE)
+        result = subprocess.run([WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en" ], capture_output=True, text=True)
+        text = result.stdout.strip()
 
-    result = subprocess.run([WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en" ], capture_output=True, text=True)
+        if "result:" in text.lower():
+            text = text.split("result:")[-1].strip()
 
-    text = result.stdout.strip()
-
-    if "result:" in text.lower():
-        text = text.split("result:")[-1].strip()
-
-    if text:
-        print(f"🎤 You said: {text}")
-        return text
+        if text:
+            print(f"🎤 You said: {text}")
+            return text
     
-    return None
-
+    finally:
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
 
 
 def input_keyboard():
     return input("\n👤 Enter text (or 'stop' to exit): ")
 
 # --- INTERACTION WITH OLLAMA ---
+def flush_sentences(buf:str ) -> tuple[list[str], str]:
+    """Flush complete sentences from the buffer and return them along with the remaining buffer.
+    Example:
+    Input: "Hello. How are you? I am fine"
+    Output: (["Hello.", "How are you?"], "I am fine")
+    """
+    sentences = re.split(r'(?<=[.!?]) +', buf)
+    if len(sentences) <= 1:
+        return [], buf  # No complete sentence yet
+    complete_sentences = sentences[:-1]  # All but the last are complete
+    remaining_buf = sentences[-1]  # The last part is the new buffer
+    return complete_sentences, remaining_buf
+
 def ask_ollama_with_memory(user_input):
     global messages_history
    
@@ -265,13 +343,6 @@ def ask_ollama_with_memory(user_input):
     ai_memory_context = memory.get_context_for_ai()
 
     full_prompt = f"""
-    You are an AI assistant. Use MEMORY to maintain consistency.
-
-    --- MEMORY ---
-    Short-term: {json.dumps(memory.short_term, ensure_ascii=False, indent=2)}
-    Long-term: {json.dumps(memory.long_term, ensure_ascii=False, indent=2)}
-    Dynamic: {json.dumps(memory.dynamic, ensure_ascii=False, indent=2)}
-
     --- PROCESSED MEMORY (SUMMARY) ---
 {ai_memory_context}
 
@@ -288,24 +359,39 @@ def ask_ollama_with_memory(user_input):
         response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history, stream=True)
 
         ai_answer = "" # we will build the answer as it streams in
+        buf = "" # buffer for incomplete sentences
 
         for chunk in response:
             if 'message' in chunk and 'content' in chunk['message']:
-                content = chunk['message']['content']
-                ai_answer += content
-                print(content, end='', flush=True)
+                token = chunk['message']['content']
+                ai_answer += token
+                buf += token
+                print(token, end='', flush=True)
                 
+                sentences, buf = flush_sentences(buf)
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if sentence:
+                        audio_streamer.speak(sentence)
+
         print() # for newline after response is done
         
+        if buf.strip(): # speak any remaining text in buffer
+            audio_streamer.speak(buf.strip())
+
+        audio_streamer.wait_until_done()
         # Don't add command tags to history
 
         process_memory(user_msg=user_input, assistant_msg=ai_answer)
 
         messages_history.append({'role': 'assistant', 'content': ai_answer})
-        return ai_answer
+        return ai_answer 
     
     except Exception as e:
-        return f"An error occurred: {e}"
+        err = f"An error occurred: {e}"
+        audio_streamer.speak(err)
+        audio_streamer.wait_until_done()
+        return err
 
 
 #--- MAIN MATH LOGIC ---
@@ -337,7 +423,7 @@ def pronounce_number_in_text(text):
 
 def calculate_math(query):
     """Detect and calculate math expressions with pronounced numbers"""
-    import re
+    
     # Pattern for simple math: "what is X + Y", "how much is X - Y", "X + Y", etc.
     math_patterns = [
         r'(?:what is|how much is|calculate|compute)\s+([\d+\-*/ ().]+)(?:\s*[?])?',
@@ -420,23 +506,20 @@ def main():
                 # Check for math expressions first
                 math_result = calculate_math(query)
                 if math_result:
-                    final_answer = math_result
                     print(f"🧮 Math: {query} = {math_result}")
+                    speak_silero(math_result)
                 else:
                     # talk to Ollama
                     llm_response = ask_ollama_with_memory(query)
 
-# check, command tag or normal response
-                    final_answer = process_ai_command(llm_response)
-
-                # Speak the response
-                speak_silero(final_answer)
-
+                    # check, command tag or normal response
+                    command_result = process_ai_command(llm_response)
+                    if command_result != llm_response:
+                        speak_silero(command_result)
     finally:
         # Clean shutdown
         audio_streamer.stop()
         print("Shutting down.")
-
 
 if __name__ == "__main__":
     main()

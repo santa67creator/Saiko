@@ -53,9 +53,13 @@
         "stream_history": []
     },
     "facts": {
-        "important_info": []
+        "important_info": [
+            "I love sh-",
+            "what i like?",
+            "i like music"
+        ]
     },
-    "run_count": 43,
+    "run_count": 133,
     "user_profile": {
         "name": "?"
     }
