@@ -1,4 +1,4 @@
-from email.mime import text
+import time
 import sys
 import os
 import tempfile
@@ -149,13 +149,13 @@ class AudioStreamer:
 
         # Wait until callback drains the audio
             while self.is_playing.is_set() or not self.audio_queue.empty():
-                threading.Event().wait(0.05)        
+                time.sleep(0.05)        
    
     def wait_until_done(self):
         """Wait until all audio has been played"""
         self._tts_queue.join()  # Wait until all TTS tasks are done
         while self.is_playing.is_set() or not self.audio_queue.empty():
-            threading.Event().wait(0.1)
+            time.sleep(0.1)
     
     def stop(self):
         """Stop the audio stream"""
@@ -183,26 +183,8 @@ def process_memory(user_msg, assistant_msg):
     memory.update_short_term(user_msg=user_msg, assistant_msg=assistant_msg)
 
 system_prompt = """
-You are a voice assistant. You control the computer and respond in English.
-
-IMPORTANT:
-Match user commands EXACTLY and LITERALLY based on the rules below.
-Do NOT guess. Do NOT reinterpret. Only match exact intent.
-
-Return ONLY the special command tag if the user requests the action.
-Do NOT include any extra text.
-
-Rules:
-- If the user says a phrase containing "increase volume" → return {{VOLUME_UP}}
-- If the user says a phrase containing "volume up" → return {{VOLUME_UP}}
-
-- If the user says a phrase containing "decrease volume" → return {{VOLUME_DOWN}}
-- If the user says a phrase containing "volume down" → return {{VOLUME_DOWN}}
-
-- If the user says "open browser" or "browser" → return {{OPEN_BROWSER}}
-- If the user says "open notepad" or "notepad" → return {{OPEN_NOTEPAD}}
-
-If none of the above apply, reply briefly in 1-2 sentences.
+You are a voice assistant. You respond in English.
+Reply briefly in 1-2 sentences.
 """
 
 messages_history = [
@@ -295,25 +277,63 @@ def save_wav(path, audio_data, SAMPLE_RATE):
 def listen():
     print("\n🎤 Listening... (speak now)")
 
-    duration = 2  # seconds
-    audio = sd.rec(int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='float32')
-    sd.wait()  # Wait until recording is finished
+    chunk_size = int(VAD_CHUNK_DURATION * SAMPLE_RATE)
+    recorded_chunks = []
+    silence_duration = 0.0
+    speech_duration = 0.0
+    speech_started = False
+
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32') as stream:
+        while True:
+            chunk, _ = stream.read(chunk_size)
+            volume = np.sqrt(np.mean(chunk**2))  # RMS amplitude
+
+            is_speech = volume > VAD_SILENCE_THRESHOLD
+
+            if is_speech:
+                if not speech_started:
+                    speech_started = True
+                    print("🔴 Recording...")
+                silence_duration = 0.0
+                speech_duration += VAD_CHUNK_DURATION
+                recorded_chunks.append(chunk)
+            else:
+                if speech_started:
+                    silence_duration += VAD_CHUNK_DURATION
+                    recorded_chunks.append(chunk)  # include silence in recording for better ASR accuracy
+
+                    if silence_duration >= VAD_SILENCE_SECS:
+                        print("⏹ Silence detected, stopping.")
+                        break
+
+            # safety check to prevent infinite recording
+            total_duration = speech_duration + silence_duration
+            if speech_started and total_duration >= VAD_MAX_SECS:
+                print("⏹ Max duration reached.")
+                break
+
+    # validate minimum speech duration
+    if speech_duration < VAD_MIN_SPEECH_SECS:
+        print("⚠️ Too short, ignoring.")
+        return None
+
+    audio = np.concatenate(recorded_chunks, axis=0)
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         wav_path = tmp.name
 
     try:
         save_wav(wav_path, audio, SAMPLE_RATE)
-        result = subprocess.run([WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en" ], capture_output=True, text=True)
+        result = subprocess.run(
+            [WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en"],
+            capture_output=True, text=True
+        )
         text = result.stdout.strip()
-
         if "result:" in text.lower():
             text = text.split("result:")[-1].strip()
-
         if text:
             print(f"🎤 You said: {text}")
             return text
-    
     finally:
         if os.path.exists(wav_path):
             os.unlink(wav_path)
@@ -428,7 +448,7 @@ def calculate_math(query):
     math_patterns = [
         r'(?:what is|how much is|calculate|compute)\s+([\d+\-*/ ().]+)(?:\s*[?])?',
         r'^([\d+\-*/ ().]+)$',
-        r'([\d+\-*/ ().]+)\s*[=]?$'
+        r'((?=.*\d)[\d+\-*/ ().]+)\s*[=]?$'
     ]
     
     for pattern in math_patterns:
@@ -450,6 +470,20 @@ def calculate_math(query):
                     return f"The answer is {pronounced_result}"
                 except:
                     return None
+    return None
+
+COMMAND_KEYWORDS = {
+    "{{VOLUME_UP}}":    ["volume up", "increase volume"],
+    "{{VOLUME_DOWN}}":  ["volume down", "decrease volume"],
+    "{{OPEN_BROWSER}}": ["open browser"],
+    "{{OPEN_NOTEPAD}}": ["open notepad"],
+}
+
+def detect_local_command(query: str) -> str | None:
+    q = query.lower()
+    for tag, keywords in COMMAND_KEYWORDS.items():
+        if any(kw in q for kw in keywords):
+            return tag
     return None
 
 def process_ai_command(response_text):
@@ -509,13 +543,12 @@ def main():
                     print(f"🧮 Math: {query} = {math_result}")
                     speak_silero(math_result)
                 else:
-                    # talk to Ollama
-                    llm_response = ask_ollama_with_memory(query)
-
-                    # check, command tag or normal response
-                    command_result = process_ai_command(llm_response)
-                    if command_result != llm_response:
-                        speak_silero(command_result)
+                    local_cmd = detect_local_command(query)
+                    if local_cmd:
+                        result = process_ai_command(local_cmd)
+                        speak_silero(result)
+                    else:
+                        ask_ollama_with_memory(query)
     finally:
         # Clean shutdown
         audio_streamer.stop()
