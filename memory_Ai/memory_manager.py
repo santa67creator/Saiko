@@ -20,12 +20,14 @@ class MemoryManager:
 
 
     def get_context_for_ai(self):
-        """Converts JSON memory into understandable text for LLM"""
         # Take only important facts from user profile
         user_name = self.long_term.get("user_profile", {}).get("name", "User")
-        
-        # Save short block knowledge
         context = f"Information about user: Name is {user_name}.\n"
+
+        # Save short block knowledge
+        important_info = self.long_term.get("facts", {}).get("important_info", [])
+        if important_info:
+            context += f"Important facts about user: {'; '.join(important_info[-5:])}.\n"
         
         # Take last 5 observations (to avoid bloating context)
         if self.dynamic.get("observations"):
@@ -47,8 +49,16 @@ class MemoryManager:
             return {}
 
     def _save_json(self, path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
+        tmp_path = path + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            os.replace(tmp_path, path)
+        except Exception as e:
+            print(f"Error saving {path}: {e}")
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
 
     # ---- Load all ----
 
@@ -67,6 +77,7 @@ class MemoryManager:
             "learned_patterns": []
         }
         self.run_count = self.long_term.get("run_count", 0)
+
     # ---- Save all ----
 
     def save_memory(self):
@@ -74,7 +85,7 @@ class MemoryManager:
         self._save_json(self.short_path, self.short_term)
         self._save_json(self.long_path, self.long_term)
         self._save_json(self.dynamic_path, self.dynamic)
-
+    
     # ---- Update short-term ----
 
     def update_short_term(self, user_msg, assistant_msg):
@@ -85,7 +96,6 @@ class MemoryManager:
         # Keep last 30 messages
         self.short_term["conversation_context"] = \
             self.short_term["conversation_context"][-30:]
-        self.save_memory()
 
     # ---- Update long-term ----
 
@@ -93,10 +103,10 @@ class MemoryManager:
         # EXAMPLE: detect if user shares name
         t = text.lower()
         if "my name is" in t:
-            name = text.split("my name is")[-1].strip()
-            self.long_term.setdefault("user_profile", {})
-            self.long_term["user_profile"]["name"] = name
-            self.save_memory()
+            name = text.split("my name is")[-1].strip().split()[0].strip(".,!?")
+            if len(name) > 1 and name != "...":
+                self.long_term.setdefault("user_profile", {})
+                self.long_term["user_profile"]["name"] = name
 
         important_patterns = ["i like", "i dislike", "my favorite", "i want", "i love", "my hobby", "i prefer",
         "i hate", "i don't like", "my goal", "i want to be",
@@ -110,7 +120,6 @@ class MemoryManager:
                 # Keep only last 20 important info pieces
                 self.long_term["facts"]["important_info"] = \
                     self.long_term["facts"]["important_info"][-50:]
-                self.save_memory()
                 break
 
         self.run_count += 1
@@ -123,9 +132,11 @@ class MemoryManager:
     # ---- Update dynamic ----
 
     def update_dynamic(self, text):
+        noise = {"[blank_audio]", "(popping)", "(clicking)", "."}
+        if len(text.strip()) < 4 or text.strip().lower() in noise:
+            return
         self.dynamic["observations"].append(text)
         self.dynamic["observations"] = self.dynamic["observations"][-50:]
-        self.save_memory()
 
 
 
@@ -139,7 +150,7 @@ class MemoryManager:
 
             
             for info in facts:
-                if info and info.strip() == "":  # Skip empty facts
+                if not info or info.strip() == "":  # Skip empty facts
                     continue
 
                 if len(info) > 250:  # Limit to 250 characters
@@ -173,8 +184,8 @@ class MemoryManager:
                 if o not in seen_obs:
                     unique_obs.append(o)
                     seen_obs.add(o)
-
-            self.dynamic["observations"] = unique_obs[-100:]  # Keep last 100 unique observations
+    
+            self.dynamic["observations"] = unique_obs[-50:]  # Keep last 50 unique observations
 
         # This can be called periodically to trim memory if it grows too large
         # CLEAN SHORT-TERM MEMORY
@@ -188,6 +199,4 @@ class MemoryManager:
                 if m.get("user") or m.get("assistant")  # Keep if either user or assistant message exists
             ]
 
-            self.short_term["conversation_context"] = self.short_term["conversation_context"][-30:]
-
-        self.save_memory()
+            self.short_term["conversation_context"] = cleaned_ctx[-30:]

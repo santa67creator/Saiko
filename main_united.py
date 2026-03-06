@@ -181,10 +181,15 @@ def process_memory(user_msg, assistant_msg):
     memory.update_long_term(user_msg)
     memory.update_dynamic(user_msg)
     memory.update_short_term(user_msg=user_msg, assistant_msg=assistant_msg)
+    memory.save_memory()
 
 system_prompt = """
-You are a voice assistant. You respond in English.
-Reply briefly in 1-2 sentences.
+You are Saiko, a friendly AI voice assistant.
+
+Your personality: friendly, helpful, empathetic, curious, and creative.
+Your speech style: short, engaging, expressive, and concise.
+Add a touch of humor when appropriate.
+Reply in 1-2 sentences maximum.
 """
 
 messages_history = [
