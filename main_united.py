@@ -1,9 +1,10 @@
+#import tempfile
+#import wave
+#import subprocess
 import time
 import sys
 import os
-import tempfile
 import platform
-import wave
 import webbrowser
 import threading
 import queue
@@ -11,12 +12,12 @@ import queue
 import re
 import torch
 import sounddevice as sd
-import subprocess
 import ollama
 import pyautogui
 import keyboard
 import numpy as np
 from memory_Ai.memory_manager import MemoryManager
+from faster_whisper import WhisperModel
 
 def compress_memory(mem):
     if isinstance(mem, dict):
@@ -32,14 +33,17 @@ SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary 
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
 
-WHISPER_PATH = "./Whisper/Release/whisper-cli.exe"  # Path to your local Whisper CLI executable
-WHISPER_MODEL = "./Whisper/ggml-base.en.bin"  # Path to your local Whisper model file
+#  --- ((FASTER)WHISPER) SETTINGS ---
+print(">>> Loading Faster-Whisper ASR model...")
+model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
+ASR_SAMPLING_RATE = 16000
+# device options: "cuda", "cpu", "mps" (Apple Silicon). compute_type options: "int8", "float16", "float32". int8 is fastest but least accurate, float32 is slowest but most accurate. Adjust based on your hardware capabilities and needs.
 
 
 #--- VAD SETTINGS ---
 VAD_CHUNK_DURATION = 0.5  # seconds
 VAD_SILENCE_THRESHOLD = 0.01  # Adjust this threshold based on your environment (lower is more sensitive)
-VAD_SILENCE_SECS = 1.0  # seconds of silence to consider the end of speech
+VAD_SILENCE_SECS = 2.0  # seconds of silence to consider the end of speech
 VAD_MAX_SECS = 10.0  # maximum recording length to prevent infinite recording
 VAD_MIN_SPEECH_SECS = 0.3  # minimum length of speech to consider valid
 
@@ -140,6 +144,8 @@ class AudioStreamer:
             return
         
         text = strip_unsupported_chars(text)
+        if not text:
+            return
 
         print(f"🔊 Assistant: {text}")
          # No overlap wait for previous voice to fully end
@@ -241,27 +247,16 @@ def setup_keyboard_shortcuts():
     print("   Ctrl+Q - exit")
 
 
-def strip_unsupported_chars(text: str) -> str:
+def strip_unsupported_chars(text: str) -> str | None:
     # delete emoji,  Unicode
-    emoji_pattern = re.compile(
-        "[" 
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport & map symbols
-        "\U0001F1E0-\U0001F1FF"  # flags
-        "\U00002700-\U000027BF"  # dingbats
-        "\U0001F900-\U0001F9FF"  # supplemental symbols
-        "\U0001FA70-\U0001FAFF"  # Symbols Extended-A
-        "]+", 
-        flags=re.UNICODE
-    )
-    text = emoji_pattern.sub("", text)
+    text = re.sub(r'[^\x00-\x7F]+', '', text)
+    text = re.sub(r'[^a-zA-Z0-9\s.,?!;:\'-]', '', text)
     
-    # delete non-ASCII characters (except for regular letters and punctuation)
-    text = text.encode("ascii", "ignore").decode("ascii")
-    
-    # if string is empty — return at least "."
-    return text.strip() or "."
+    cleaned = text.strip()
+    # if the cleaned text is empty or contains no alphanumeric characters, return None
+    if not re.search(r'[a-zA-Z0-9]', cleaned):
+        return None
+    return cleaned
 
 
 # --- TTS / ASR ---
@@ -270,28 +265,21 @@ def speak_silero(text):
     audio_streamer.speak(text)
     audio_streamer.wait_until_done()
 
-def save_wav(path, audio_data, SAMPLE_RATE):
-    audio_int16 = np.int16(audio_data * 32767)
-
-    with wave.open(path, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(audio_int16.tobytes())
 
 def listen():
     print("\n🎤 Listening... (speak now)")
 
-    chunk_size = int(VAD_CHUNK_DURATION * SAMPLE_RATE)
+    chunk_size = int(VAD_CHUNK_DURATION * ASR_SAMPLING_RATE)
     recorded_chunks = []
     silence_duration = 0.0
     speech_duration = 0.0
     speech_started = False
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32') as stream:
+    with sd.InputStream(samplerate=ASR_SAMPLING_RATE, channels=1, dtype='float32') as stream:
         while True:
             chunk, _ = stream.read(chunk_size)
-            volume = np.sqrt(np.mean(chunk**2))  # RMS amplitude
+            chunk_flat = chunk.flatten() # flatten to 1D array for volume calculation
+            volume = np.sqrt(np.mean(chunk_flat**2))  # RMS amplitude
 
             is_speech = volume > VAD_SILENCE_THRESHOLD
 
@@ -301,11 +289,11 @@ def listen():
                     print("🔴 Recording...")
                 silence_duration = 0.0
                 speech_duration += VAD_CHUNK_DURATION
-                recorded_chunks.append(chunk)
+                recorded_chunks.append(chunk_flat)
             else:
                 if speech_started:
                     silence_duration += VAD_CHUNK_DURATION
-                    recorded_chunks.append(chunk)  # include silence in recording for better ASR accuracy
+                    recorded_chunks.append(chunk_flat)  # include silence in recording for better ASR accuracy
 
                     if silence_duration >= VAD_SILENCE_SECS:
                         print("⏹ Silence detected, stopping.")
@@ -322,26 +310,20 @@ def listen():
         print("⚠️ Too short, ignoring.")
         return None
 
-    audio = np.concatenate(recorded_chunks, axis=0)
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        wav_path = tmp.name
+    audio = np.concatenate(recorded_chunks)
 
     try:
-        save_wav(wav_path, audio, SAMPLE_RATE)
-        result = subprocess.run(
-            [WHISPER_PATH, "-m", WHISPER_MODEL, "-f", wav_path, "-nt", "-l", "en"],
-            capture_output=True, text=True
-        )
-        text = result.stdout.strip()
-        if "result:" in text.lower():
-            text = text.split("result:")[-1].strip()
+        segments, info = model_asr.transcribe(audio, beam_size=5) # beam_size can be adjusted for better accuracy (higher is better but slower)
+        text = " ".join([segment.text for segment in segments]).strip()
+
         if text:
             print(f"🎤 You said: {text}")
             return text
-    finally:
-        if os.path.exists(wav_path):
-            os.unlink(wav_path)
+        return None
+    except Exception as e:
+        print(f"Error during ASR: {e}")
+        return None   
+
 
 
 def input_keyboard():
