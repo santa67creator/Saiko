@@ -2,6 +2,7 @@
 #import wave
 #import subprocess
 import time
+import random
 import sys
 import os
 import platform
@@ -33,12 +34,18 @@ SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary 
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
 
+# IDLE SETTINGS
+last_user_activity_time = time.time()
+IDLE_TIMEOUT = 25  # seconds before considering idle
+idle_talk_count = 0 # counts how many times we've done idle talk, to increase the chance of talking the longer the user is idle
+MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
+chat_lock = threading.Lock() # to prevent multiple simultaneous chats with ollama when idle talk triggers while user is active again
+
 #  --- ((FASTER)WHISPER) SETTINGS ---
 print(">>> Loading Faster-Whisper ASR model...")
 model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
 ASR_SAMPLING_RATE = 16000
 # device options: "cuda", "cpu", "mps" (Apple Silicon). compute_type options: "int8", "float16", "float32". int8 is fastest but least accurate, float32 is slowest but most accurate. Adjust based on your hardware capabilities and needs.
-
 
 #--- VAD SETTINGS ---
 VAD_CHUNK_DURATION = 0.5  # seconds
@@ -190,12 +197,28 @@ def process_memory(user_msg, assistant_msg):
     memory.save_memory()
 
 system_prompt = """
-You are Saiko, a friendly AI voice assistant.
+[IDENTITY]
+You are Saiko, a real-time voice AI assistant.
+You run on a local machine and speak through a TTS voice system.
 
-Your personality: friendly, helpful, empathetic, curious, and creative.
-Your speech style: short, engaging, expressive, and concise.
+[PERSONALITY]
+Friendly, slightly playful, intelligent, and supportive.
 Add a touch of humor when appropriate.
-Reply in 1-2 sentences maximum.
+
+[VOICE STYLE]
+Conversational and clear.
+Never use markdown, bullet points, asterisks, or dashes.
+No emojis or special characters — they break the voice system.
+
+[RULES]
+Prefer short responses (1–2 sentences).
+Speak naturally, like a human — not like a chatbot.
+If the user asks something complex, give a clear spoken answer without walls of text.
+
+[MEMORY]
+Memory context will be provided with each message.
+Use it naturally to personalize your response.
+Do not mention that memory exists unless the user asks directly.
 """
 
 messages_history = [
@@ -265,7 +288,6 @@ def speak_silero(text):
     audio_streamer.speak(text)
     audio_streamer.wait_until_done()
 
-
 def listen():
     print("\n🎤 Listening... (speak now)")
 
@@ -278,6 +300,12 @@ def listen():
     with sd.InputStream(samplerate=ASR_SAMPLING_RATE, channels=1, dtype='float32') as stream:
         while True:
             chunk, _ = stream.read(chunk_size)
+            if audio_streamer.is_playing.is_set():
+                speech_started = False
+                silence_duration = 0.0
+                speech_duration = 0.0
+                recorded_chunks = []
+                continue
             chunk_flat = chunk.flatten() # flatten to 1D array for volume calculation
             volume = np.sqrt(np.mean(chunk_flat**2))  # RMS amplitude
 
@@ -324,8 +352,6 @@ def listen():
         print(f"Error during ASR: {e}")
         return None   
 
-
-
 def input_keyboard():
     return input("\n👤 Enter text (or 'stop' to exit): ")
 
@@ -363,10 +389,11 @@ def ask_ollama_with_memory(user_input):
     if len(messages_history) > 11:
         messages_history = [messages_history[0]] + messages_history[-10:]
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history, stream=True)
+        with chat_lock: # ensure only one chat at a time to prevent overlapping responses
+            response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history, stream=True)
 
-        ai_answer = "" # we will build the answer as it streams in
-        buf = "" # buffer for incomplete sentences
+            ai_answer = "" # we will build the answer as it streams in
+            buf = "" # buffer for incomplete sentences
 
         for chunk in response:
             if 'message' in chunk and 'content' in chunk['message']:
@@ -400,6 +427,43 @@ def ask_ollama_with_memory(user_input):
         audio_streamer.wait_until_done()
         return err
 
+# --- IDLE DETECTION ---
+def autonomus_idle_talk_loop():
+    global last_user_activity_time, idle_talk_count
+    while is_running:
+        time.sleep(5)
+        if audio_streamer.is_playing.is_set():
+            last_user_activity_time = time.time()  # reset idle timer if assistant is speaking
+            continue
+
+        idle_duration = time.time() - last_user_activity_time
+
+        current_timeout = IDLE_TIMEOUT + (idle_talk_count * 20) + random.randint(5, 15)  # increase timeout with each idle talk
+
+        if idle_duration > current_timeout and idle_talk_count < MAX_IDLE_TALK:
+            idle_talk_count += 1
+            last_user_activity_time = time.time()  # reset timer after idle talk
+
+            idle_prompts = """
+            You are Saiko, a VTuber streaming alone right now.
+            The user has been silent for a while.
+            Think out loud, make a short casual observation, or ask a rhetorical question.
+            Keep it strictly to 1 short sentence. No markdown.
+            """
+
+            print(f"\n[Idle Mode] Initiating autonomous thought ({idle_talk_count}/{MAX_IDLE_TALK})...")
+
+            with chat_lock: # ensure we don't interrupt an active conversation
+                try:
+                    response = ollama.chat(model=OLLAMA_MODEL, messages=[
+                        {'role': 'system', 'content': system_prompt}, 
+                        *messages_history[1:],
+                        {'role': 'user', 'content': idle_prompts}])
+                    text = response['message']['content']
+
+                    audio_streamer.speak(text)
+                except Exception as e:
+                    print(f"Error during idle talk: {e}")
 
 #--- MAIN MATH LOGIC ---
 def pronounce_number_in_text(text):
@@ -491,6 +555,8 @@ def main():
 
     speak_silero("Control systems active. Awaiting commands.")
 
+    threading.Thread(target=autonomus_idle_talk_loop, daemon=True).start()
+
     # choice mode input (voice/keyboard)
     print("\n=== SELECT INPUT MODE ===")
     print("1. Voice input (microphone)")
@@ -511,6 +577,10 @@ def main():
                 query = listen()
 
             if query:
+                global last_user_activity_time, idle_talk_count
+                last_user_activity_time = time.time()  # reset idle timer on user activity
+                idle_talk_count = 0  # reset idle talk count on user activity
+
                 if any(cmd in query.lower() for cmd in ["stop", "exit", "bye", "enough"]):
                     speak_silero("Shutting down. Goodbye.")
                     is_running = False
