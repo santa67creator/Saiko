@@ -1,10 +1,11 @@
 #import tempfile
 #import wave
 #import subprocess
+import sys
+
 import ast
 import time
 import random
-import sys
 import os
 import platform
 import webbrowser
@@ -18,7 +19,7 @@ import ollama
 import pyautogui
 import keyboard
 import numpy as np
-from memory_Ai.memory_manager import MemoryManager
+from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
 
 def compress_memory(mem):
@@ -27,7 +28,6 @@ def compress_memory(mem):
     if isinstance(mem, list):
         return " | ".join(mem)
     return str(mem)
-
 
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
@@ -173,17 +173,8 @@ audio_streamer = AudioStreamer(SAMPLE_RATE)
 # --- MEMORY AND PROMPT ---
 
 # create a MemoryManager instance (module exports the class)
-memory = MemoryManager(
-    short_path="memory_Ai/short_memory.json",
-    long_path="memory_Ai/long_memory.json",
-    dynamic_path="memory_Ai/dynamic_memory.json"
-)
 
-def process_memory(user_msg, assistant_msg):
-    memory.update_long_term(user_msg)
-    memory.update_dynamic(user_msg)
-    memory.update_short_term(user_msg=user_msg, assistant_msg=assistant_msg)
-    memory.save_memory()
+memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
 system_prompt = """
 [IDENTITY]
@@ -267,7 +258,6 @@ def strip_unsupported_chars(text: str) -> str | None:
     if not re.search(r'[a-zA-Z0-9]', cleaned):
         return None
     return cleaned
-
 
 # --- TTS / ASR ---
 def speak_silero(text):
@@ -360,16 +350,16 @@ def ask_ollama_with_memory(user_input):
     global messages_history
    
     # get context from the instance we created earlier
-    ai_memory_context = memory.get_context_for_ai()
+    relevant_context = memory.get_relevant_context(user_input, top_k=5)
 
     full_prompt = f"""
     --- PROCESSED MEMORY (SUMMARY) ---
-{ai_memory_context}
+{relevant_context}
 
     --- USER MESSAGE ---
 {user_input}
 
-    Respond naturally based on MEMORY.
+    Respond naturally based on the memories if they are relevant.
     """
 
     messages_history.append({'role': 'user', 'content': full_prompt})
@@ -400,7 +390,7 @@ def ask_ollama_with_memory(user_input):
         if buf.strip(): # speak any remaining text in buffer
             audio_streamer.speak(buf.strip())
 
-        process_memory(user_msg=user_input, assistant_msg=ai_answer)
+        memory.add_memory_interaction(user_input, ai_answer)
 
         messages_history.append({'role': 'assistant', 'content': ai_answer})
         return ai_answer 
