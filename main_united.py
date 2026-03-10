@@ -1,6 +1,7 @@
 #import tempfile
 #import wave
 #import subprocess
+import ast
 import time
 import random
 import sys
@@ -36,7 +37,7 @@ SPEAKER = "en_0"
 
 # IDLE SETTINGS
 last_user_activity_time = time.time()
-IDLE_TIMEOUT = 25  # seconds before considering idle
+IDLE_TIMEOUT = 50  # seconds before considering idle
 idle_talk_count = 0 # counts how many times we've done idle talk, to increase the chance of talking the longer the user is idle
 MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
 chat_lock = threading.Lock() # to prevent multiple simultaneous chats with ollama when idle talk triggers while user is active again
@@ -65,30 +66,33 @@ model_tts.to(torch.device(SILERO_DEVICE))
 print(">>> Voice loaded. Assistant ready!")
 
 # --- AUDIO STREAMING CLASS ---
+
 class AudioStreamer:
     def __init__(self, sample_rate):
         self.sample_rate = sample_rate
-        self.audio_queue = queue.Queue()
+        # Use deque to store ready audio arrays
+        self.audio_queue = queue.Queue() 
+        self.current_chunk = None
         self.stream = None
         self.is_playing = threading.Event()
         
-        # Single worker thread — processes sentences ONE BY ONE, no overlap
+         # Single worker thread — processes sentences ONE BY ONE, no overlap
         self._tts_queue = queue.Queue()
-        self._tts_busy = False
+        self._tts_busy = threading.Event()
         self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
         self._tts_thread.start()
         self.lock = threading.Lock()
 
     def _tts_worker(self):
         """Generate PCM one sentence at a time prevents overlap"""
-        fade = int(0.05 * self.sample_rate)  # 50ms fade
+        fade = int(0.05 * self.sample_rate) # 50ms fade
         while True:
             sentence = self._tts_queue.get()
-            if sentence is None:
-                break  # Sentinel to stop the thread
+            if sentence is None: 
+                break # Sentinel to stop the thread
             
             try:
-                self._tts_busy = True
+                self._tts_busy.set()
                 audio = model_tts.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
                 audio_data = audio.numpy().astype(np.float32)
 
@@ -96,87 +100,72 @@ class AudioStreamer:
                 if len(audio_data) > 2 * fade:
                     audio_data[:fade] *= np.linspace(0, 1, fade)
                     audio_data[-fade:] *= np.linspace(1, 0, fade)
-                self.is_playing.set()
-                self.audio_queue.put(audio_data)
+                
+                with self.lock:
+                    self.audio_queue.put(audio_data)
+                    self.is_playing.set()
                 
             finally:
-                self._tts_busy = False
+                self._tts_busy.clear()
                 self._tts_queue.task_done()
         
     def audio_callback(self, outdata, frames, time, status):
         """Callback function for continuous audio stream"""
+        # If there is no current piece, we try to take a new one from the queue
         if status:
             print(f"Audio status: {status}")
-        
-        try:
-            # Try to get audio chunk from queue
-            data = self.audio_queue.get_nowait()
-            
-            # Handle data size
-            if len(data) < len(outdata):
-                # Pad with zeros if not enough data
-                outdata[:len(data), 0] = data
-                outdata[len(data):, 0] = 0
-                if self.audio_queue.empty() and not self._tts_busy:    
-                    self.is_playing.clear()
-            else:
-                # Fill output buffer
-                outdata[:, 0] = data[:len(outdata)]
-                # Put remaining data back in queue
-                remaining = data[len(outdata):]
-                if len(remaining) > 0:
-                    self.audio_queue.put(remaining)
-        except queue.Empty:
-            # No data available, output silence
-            outdata[:, 0] = 0
-            if self._tts_queue.empty() and not self._tts_busy:
+        if self.current_chunk is None:
+            try:
+                self.current_chunk = self.audio_queue.get_nowait()
+            except queue.Empty:
+                outdata.fill(0)
                 self.is_playing.clear()
-    
+                return
+
+        # find out how many frames we can output in this callback
+        chunk_len = len(self.current_chunk)
+        if chunk_len <= frames:
+            # send the whole chunk and fill the rest with zeros
+            outdata[:chunk_len, 0] = self.current_chunk
+            outdata[chunk_len:, 0] = 0
+            self.current_chunk = None # mark current chunk as done
+        else:
+            # send only the needed frames and keep the rest for the next callback
+            outdata[:, 0] = self.current_chunk[:frames]
+            self.current_chunk = self.current_chunk[frames:]
+
     def start(self):
         """Start the continuous audio stream"""
         self.stream = sd.OutputStream(
-           # device=18, # Specify your output device index here
+            # device=18, # Specify your output device index here
             samplerate=self.sample_rate,
             channels=1, # Mono output
             callback=self.audio_callback,
-            blocksize=4096, # 256 or 512 is usually good for low-latency streaming
+            blocksize=1024,  # 256 or 512 is usually good for low-latency streaming
             dtype='float32'
         )
         self.stream.start()
         print("🔊 Audio stream started")
-    
+
     def speak(self, text):
-        """Queue audio for playback, no overlap."""
-        if not text:
-            return
-        
+        if not text: return
         text = strip_unsupported_chars(text)
-        if not text:
-            return
-
+        if not text: return
         print(f"🔊 Assistant: {text}")
-         # No overlap wait for previous voice to fully end
-        with self.lock:
-            self._tts_queue.put(text)
-            self._tts_queue.join()
+        # No overlap wait for previous voice to fully end
+        self._tts_queue.put(text)
 
-        # Wait until callback drains the audio
-            while self.is_playing.is_set() or not self.audio_queue.empty():
-                time.sleep(0.05)        
-   
     def wait_until_done(self):
-        """Wait until all audio has been played"""
-        self._tts_queue.join()  # Wait until all TTS tasks are done
-        while self.is_playing.is_set() or not self.audio_queue.empty():
+        """Wait until all queued text is spoken and audio is finished."""
+        # Wait until TTS queue is empty, no current TTS generation is happening, and no audio is playing
+        while not self._tts_queue.empty() or self._tts_busy.is_set() or self.is_playing.is_set():
             time.sleep(0.1)
-    
+
     def stop(self):
-        """Stop the audio stream"""
-        self._tts_queue.put(None)  # Sentinel to stop TTS thread
+        self._tts_queue.put(None)
         if self.stream:
             self.stream.stop()
             self.stream.close()
-            print("🔊 Audio stream stopped")
 
 # Initialize global audio streamer
 audio_streamer = AudioStreamer(SAMPLE_RATE)
@@ -256,7 +245,6 @@ commands = {
     "{{VOLUME_DOWN}}": volume_down
 }
 
-
 is_running = True
 
 # --- KEYBOARD UTILITIES ---
@@ -268,7 +256,6 @@ def toggle_exit():
 def setup_keyboard_shortcuts():
     keyboard.add_hotkey('ctrl+q', lambda: toggle_exit())
     print("   Ctrl+Q - exit")
-
 
 def strip_unsupported_chars(text: str) -> str | None:
     # delete emoji,  Unicode
@@ -286,7 +273,7 @@ def strip_unsupported_chars(text: str) -> str | None:
 def speak_silero(text):
     """Use the audio streamer instead of direct sd.play"""
     audio_streamer.speak(text)
-    audio_streamer.wait_until_done()
+    
 
 def listen():
     print("\n🎤 Listening... (speak now)")
@@ -395,26 +382,23 @@ def ask_ollama_with_memory(user_input):
             ai_answer = "" # we will build the answer as it streams in
             buf = "" # buffer for incomplete sentences
 
-        for chunk in response:
-            if 'message' in chunk and 'content' in chunk['message']:
-                token = chunk['message']['content']
-                ai_answer += token
-                buf += token
-                print(token, end='', flush=True)
+            for chunk in response:
+                if 'message' in chunk and 'content' in chunk['message']:
+                    token = chunk['message']['content']
+                    ai_answer += token
+                    buf += token
+                    print(token, end='', flush=True)
                 
-                sentences, buf = flush_sentences(buf)
-                for sentence in sentences:
-                    sentence = sentence.strip()
-                    if sentence:
-                        audio_streamer.speak(sentence)
+                    sentences, buf = flush_sentences(buf)
+                    for sentence in sentences:
+                        sentence = sentence.strip()
+                        if sentence:
+                            audio_streamer.speak(sentence)
 
         print() # for newline after response is done
         
         if buf.strip(): # speak any remaining text in buffer
             audio_streamer.speak(buf.strip())
-
-        audio_streamer.wait_until_done()
-        # Don't add command tags to history
 
         process_memory(user_msg=user_input, assistant_msg=ai_answer)
 
@@ -494,6 +478,21 @@ def pronounce_number_in_text(text):
 
 def calculate_math(query):
     """Detect and calculate math expressions with pronounced numbers"""
+    # convert word operators to symbols for easier parsing
+    word_to_op = {
+        "plus": "+",
+        "minus": "-",
+        "times": "*",
+        "multiplied by": "*",
+        "divided by": "/",
+        "over": "/",
+        "mod": "%",
+        "to the power of": "**",
+    }
+    normalized = query.lower()
+    for word, op in word_to_op.items():
+        normalized = normalized.replace(word, op)
+
     
     # Pattern for simple math: "what is X + Y", "how much is X - Y", "X + Y", etc.
     math_patterns = [
@@ -503,13 +502,20 @@ def calculate_math(query):
     ]
     
     for pattern in math_patterns:
-        match = re.search(pattern, query.lower())
+        match = re.search(pattern, normalized)
         if match:
             expression = match.group(1).strip()
             # Basic validation - only allow digits, operators, and spaces
             if re.match(r'^[\d+\-*/.() ]+$', expression):
                 try:
-                    result = eval(expression)
+                    tree = ast.parse(expression, mode='eval')
+                    allowed = (ast.Expression, ast.BinOp, ast.UnaryOp,
+                            ast.Add, ast.Sub, ast.Mult, ast.Div,
+                            ast.Pow, ast.Mod, ast.USub, ast.Constant)
+                    if all(isinstance(node, allowed) for node in ast.walk(tree)):
+                        result = eval(compile(tree, '', 'eval'))
+                    else:
+                        return None
                     # Format the answer
                     if isinstance(result, float):
                         # Round to avoid long floating-point representations
@@ -607,7 +613,8 @@ def main():
                     else:
                         ask_ollama_with_memory(query)
     finally:
-        # Clean shutdown
+        # On exit, wait for any remaining audio to finish before shutting down
+        audio_streamer.wait_until_done() 
         audio_streamer.stop()
         print("Shutting down.")
 
