@@ -158,7 +158,9 @@ class AudioStreamer:
     def wait_until_done(self):
         """Wait until all queued text is spoken and audio is finished."""
         # Wait until TTS queue is empty, no current TTS generation is happening, and no audio is playing
-        while not self._tts_queue.empty() or self._tts_busy.is_set() or self.is_playing.is_set():
+        self._tts_queue.join()
+
+        while self.is_playing.is_set():
             time.sleep(0.1)
 
     def stop(self):
@@ -352,15 +354,13 @@ def ask_ollama_with_memory(user_input):
     # get context from the instance we created earlier
     relevant_context = memory.get_relevant_context(user_input, top_k=5)
 
-    full_prompt = f"""
-    --- PROCESSED MEMORY (SUMMARY) ---
+    full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---
 {relevant_context}
 
-    --- USER MESSAGE ---
+--- USER MESSAGE ---
 {user_input}
 
-    Respond naturally based on the memories if they are relevant.
-    """
+Respond naturally based on the memories if they are relevant."""
 
     messages_history.append({'role': 'user', 'content': full_prompt})
     if len(messages_history) > 11:
@@ -418,12 +418,7 @@ def autonomus_idle_talk_loop():
             idle_talk_count += 1
             last_user_activity_time = time.time()  # reset timer after idle talk
 
-            idle_prompts = """
-            You are Saiko, a VTuber streaming alone right now.
-            The user has been silent for a while.
-            Think out loud, make a short casual observation, or ask a rhetorical question.
-            Keep it strictly to 1 short sentence. No markdown.
-            """
+            idle_prompts = """You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
 
             print(f"\n[Idle Mode] Initiating autonomous thought ({idle_talk_count}/{MAX_IDLE_TALK})...")
 
