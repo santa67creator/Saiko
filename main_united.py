@@ -1,8 +1,4 @@
-#import tempfile
-#import wave
-#import subprocess
 import sys
-
 import ast
 import time
 import random
@@ -391,15 +387,14 @@ Respond naturally based on the memories if they are relevant."""
                     token = chunk['message']['content']
                     ai_answer += token
                     buf += token
-                    print(token, end='', flush=True)
+                    #print(token, end='', flush=True)
                 
                     sentences, buf = flush_sentences(buf)
                     for sentence in sentences:
                         sentence = sentence.strip()
                         if sentence:
                             audio_streamer.speak(sentence)
-
-        print() # for newline after response is done
+        #print() # for newline after response is done
 
         if not interruption_flag.is_set() and buf.strip():
             audio_streamer.speak(buf.strip())
@@ -523,7 +518,9 @@ def calculate_math(query):
                     # Pronounce the result
                     pronounced_result = pronounce_number_in_text(str(result))
                     return f"The answer is {pronounced_result}"
-                except:
+                except ZeroDivisionError:
+                    return "I cannot divide by zero"
+                except Exception as e:
                     return None
     return None
 
