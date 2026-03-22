@@ -90,7 +90,6 @@ Adjust the VAD (Voice Activity Detection) settings in `main_united.py`:
 
 `MAX_IDLE_TALK = 5:` Maximum consecutive autonomous messages before she waits for your input.
 
-#so this is file will "readme" can be changed then time
+# so this is file will "readme" can be changed then time
 
 # if you know how change code better, you can write in comments or fork idk
-
