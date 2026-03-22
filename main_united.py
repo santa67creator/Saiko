@@ -207,8 +207,7 @@ If the user asks something complex, give a clear spoken answer without walls of 
 [MEMORY]
 Memory context will be provided with each message.
 Use it naturally to personalize your response.
-Do not mention that memory exists unless the user asks directly.
-"""
+Do not mention that memory exists unless the user asks directly."""
 
 # create a MemoryManager instance (module exports the class)
 memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
@@ -349,30 +348,14 @@ def flush_sentences(buf:str ) -> tuple[list[str], str]:
 
 #--- MAIN MATH LOGIC ---
 def pronounce_number_in_text(text):
-    """Convert all digits in text to spoken words, including decimals.
-    Examples:
-        12 -> one two
-        3.5 -> three point five
-        -4.2 -> minus four point two
-    """
-    number_words = {
-        "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
-        "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine"
-    }
-    result_chars = []
-    for ch in text:
-        if ch in number_words:
-            result_chars.append(number_words[ch])
-        elif ch == ".":
-            result_chars.append("point")
-        elif ch == "-":
-            result_chars.append("minus")
-        else:
-            # keep other characters (e.g. spaces)
-            result_chars.append(ch)
-    # join and collapse any duplicate spaces that may have been introduced
-    result = " ".join(result_chars).replace("  ", " ")
-    return result.strip()
+    def replace_number(match):
+        num_str = match.group(0)
+        try:
+            num = float(num_str) if '.' in num_str else int(num_str)
+            return num2words(num)
+        except:
+            return num_str
+    return re.sub(r'-?\d+\.?\d*', replace_number, text)
 
 def calculate_math(query):
     """Detect and calculate math expressions with pronounced numbers"""
