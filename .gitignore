@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
 
 # C extensions
 *.so
@@ -32,9 +35,26 @@ MANIFEST
 *.manifest
 *.spec
 
+# --- LOCAL MEMORY (Most important!) ---
+# Don't share your ChromaDB database.
+# Your private conversations and data are stored there.
+memory_Ai/vector_memory/
+*.sqlite3
+
+# --- Models and Weights ---
+# If you accidentally downloaded the Silero or Whisper model directly into the project folder
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# --- Logs ---
+*.log
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+*.exe
 
 # Unit test / coverage reports
 htmlcov/
@@ -60,6 +80,10 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
 
 # Flask stuff:
 instance/
@@ -131,6 +155,7 @@ env.bak/
 venv.bak/
 venv4/               # твоя папка venv
 .venv*/
+.venv/
 
 # Spyder project settings
 .spyderproject

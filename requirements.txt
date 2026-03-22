@@ -1,0 +1,12 @@
+torch
+torchaudio
+sounddevice
+ollama
+PyAutoGUI
+keyboard
+numpy
+num2words
+faster-whisper
+chromadb
+soundfile
+omegaconf
