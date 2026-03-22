@@ -1,12 +1,11 @@
-import sys
 import ast
 import time
 import random
-import os
 import platform
 import webbrowser
 import threading
 import queue
+import subprocess
 
 import re
 import torch
@@ -15,6 +14,7 @@ import ollama
 import pyautogui
 import keyboard
 import numpy as np
+from num2words import num2words
 from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
 
@@ -25,12 +25,8 @@ SAMPLE_RATE = 48000
 SPEAKER = "en_0"
 
 # IDLE SETTINGS
-last_user_activity_time = time.time()
 IDLE_TIMEOUT = 50  # seconds before considering idle
-idle_talk_count = 0 # counts how many times we've done idle talk, to increase the chance of talking the longer the user is idle
 MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
-chat_lock = threading.Lock() # to prevent multiple simultaneous chats with ollama when idle talk triggers while user is active again
-interruption_flag = threading.Event() # to signal when user has interrupted idle talk
 
 #  --- ((FASTER)WHISPER) SETTINGS ---
 print(">>> Loading Faster-Whisper ASR model...")
@@ -63,11 +59,11 @@ print(">>> Voice loaded. Assistant ready!")
 class AudioStreamer:
     def __init__(self, sample_rate):
         self.sample_rate = sample_rate
-        # Use deque to store ready audio arrays
         self.audio_queue = queue.Queue() 
         self.current_chunk = None
         self.stream = None
         self.is_playing = threading.Event()
+        self.stop_requested = threading.Event()
 
          # Single worker thread — processes sentences ONE BY ONE, no overlap
         self._tts_queue = queue.Queue()
@@ -83,7 +79,11 @@ class AudioStreamer:
             sentence = self._tts_queue.get()
             if sentence is None: 
                 break # Sentinel to stop the thread
-            
+
+            if self.stop_requested.is_set():
+                self._tts_queue.task_done()
+                continue
+
             try:
                 self._tts_busy.set()
                 audio = model_tts.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
@@ -157,15 +157,23 @@ class AudioStreamer:
 
     def stop_and_clear(self):
         """Instantly stops the sound and clears all queues"""
-        with self.lock:
-            # Clear TTS and audio queues
-            with self._tts_queue.mutex:
-                self._tts_queue.queue.clear()
+        self.stop_requested.set()
+
+        while not self._tts_queue.empty():
+            try:
+                self._tts_queue.get_nowait()
+                self._tts_queue.task_done()
+            except queue.Empty:
+                break
             # Clear audio queue
-            with self.audio_queue.mutex:
-                self.audio_queue.queue.clear()
-            self.current_chunk = None
-            self.is_playing.clear()
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.current_chunk = None
+        self.is_playing.clear()
+        self.stop_requested.clear()
         print("\n[!] Audio interrupted!")
 
     def stop(self):
@@ -178,9 +186,6 @@ class AudioStreamer:
 audio_streamer = AudioStreamer(SAMPLE_RATE)
 
 # --- MEMORY AND PROMPT ---
-# create a MemoryManager instance (module exports the class)
-memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
-
 system_prompt = """[IDENTITY]
 You are Saiko, a real-time voice AI assistant.
 You run on a local machine and speak through a TTS voice system.
@@ -205,9 +210,8 @@ Use it naturally to personalize your response.
 Do not mention that memory exists unless the user asks directly.
 """
 
-messages_history = [
-    {'role': 'system', 'content': system_prompt}
-]
+# create a MemoryManager instance (module exports the class)
+memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
 # --- COMMANDS (OS control integration) ---
 def open_browser():
@@ -215,13 +219,16 @@ def open_browser():
     return "Opening browser."
 
 def open_notepad():
-    if platform.system() == "Windows":
-        os.system("start notepad")
-    elif platform.system() == "Darwin":
-        os.system("open -a TextEdit")
-    else:
-        os.system("gedit")
-    return "Launching notepad."
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(["notepad.exe"], check=False)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", "-a", "TextEdit"], check=False)
+        else:
+            subprocess.run(["gedit"], check=False)
+        return "Launching notepad."
+    except FileNotFoundError:
+        return "Could not find a text editor to open"
 
 def volume_up():
     for _ in range(5):
@@ -240,18 +247,6 @@ commands = {
     "{{VOLUME_DOWN}}": volume_down
 }
 
-is_running = True
-
-# --- KEYBOARD UTILITIES ---
-def toggle_exit():
-    global is_running
-    print("\n⌨️ Exit with Ctrl+Q...")
-    is_running = False
-
-def setup_keyboard_shortcuts():
-    keyboard.add_hotkey('ctrl+q', lambda: toggle_exit())
-    print("   Ctrl+Q - exit")
-
 def strip_unsupported_chars(text: str) -> str | None:
     # delete emoji,  Unicode
     text = re.sub(r'[^\x00-\x7F]+', '', text)
@@ -267,9 +262,8 @@ def speak_silero(text):
     """Use the audio streamer instead of direct sd.play"""
     audio_streamer.speak(text)
     
-def listen():
+def listen(interruption_flag: threading.Event):
     print("\n🎤 Listening... (speak now)")
-
     chunk_size = 512  # number of samples per chunk for VAD processing. Smaller is more responsive but more CPU intensive. 512 samples at 16kHz is about 0.032 seconds, which is a good balance for real-time VAD. Adjust if needed based on your hardware capabilities and responsiveness requirements.
     chunk_duration = chunk_size / ASR_SAMPLING_RATE # should be 0.5 seconds
 
@@ -352,96 +346,6 @@ def flush_sentences(buf:str ) -> tuple[list[str], str]:
     complete_sentences = sentences[:-1]  # All but the last are complete
     remaining_buf = sentences[-1]  # The last part is the new buffer
     return complete_sentences, remaining_buf
-
-def ask_ollama_with_memory(user_input):
-    global messages_history
-   
-    # get context from the instance we created earlier
-    relevant_context = memory.get_relevant_context(user_input, top_k=5)
-
-    full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---
-{relevant_context}
-
---- USER MESSAGE ---
-{user_input}
-
-Respond naturally based on the memories if they are relevant."""
-
-    messages_history.append({'role': 'user', 'content': full_prompt})
-    if len(messages_history) > 11:
-        messages_history = [messages_history[0]] + messages_history[-10:]
-    try:
-        with chat_lock: # ensure only one chat at a time to prevent overlapping responses
-            interruption_flag.clear() # clear interruption flag before starting new response
-            response = ollama.chat(model=OLLAMA_MODEL, messages=messages_history, stream=True)
-
-            ai_answer = "" # we will build the answer as it streams in
-            buf = "" # buffer for incomplete sentences
-
-            for chunk in response:
-                if interruption_flag.is_set():
-                    print("\n[!] Response interrupted by user.")
-                    break
-
-                if 'message' in chunk and 'content' in chunk['message']:
-                    token = chunk['message']['content']
-                    ai_answer += token
-                    buf += token
-                    #print(token, end='', flush=True)
-                
-                    sentences, buf = flush_sentences(buf)
-                    for sentence in sentences:
-                        sentence = sentence.strip()
-                        if sentence:
-                            audio_streamer.speak(sentence)
-        #print() # for newline after response is done
-
-        if not interruption_flag.is_set() and buf.strip():
-            audio_streamer.speak(buf.strip())
-
-        memory.add_memory_interaction(user_input, ai_answer)
-
-        messages_history.append({'role': 'assistant', 'content': ai_answer})
-        return ai_answer 
-    
-    except Exception as e:
-        err = f"An error occurred: {e}"
-        audio_streamer.speak(err)
-        audio_streamer.wait_until_done()
-        return err
-
-# --- IDLE DETECTION ---
-def autonomus_idle_talk_loop():
-    global last_user_activity_time, idle_talk_count
-    while is_running:
-        time.sleep(5)
-        if audio_streamer.is_playing.is_set():
-            last_user_activity_time = time.time()  # reset idle timer if assistant is speaking
-            continue
-
-        idle_duration = time.time() - last_user_activity_time
-
-        current_timeout = IDLE_TIMEOUT + (idle_talk_count * 20) + random.randint(5, 15)  # increase timeout with each idle talk
-
-        if idle_duration > current_timeout and idle_talk_count < MAX_IDLE_TALK:
-            idle_talk_count += 1
-            last_user_activity_time = time.time()  # reset timer after idle talk
-
-            idle_prompts = """You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
-
-            print(f"\n[Idle Mode] Initiating autonomous thought ({idle_talk_count}/{MAX_IDLE_TALK})...")
-
-            with chat_lock: # ensure we don't interrupt an active conversation
-                try:
-                    response = ollama.chat(model=OLLAMA_MODEL, messages=[
-                        {'role': 'system', 'content': system_prompt}, 
-                        *messages_history[1:],
-                        {'role': 'user', 'content': idle_prompts}])
-                    text = response['message']['content']
-
-                    audio_streamer.speak(text)
-                except Exception as e:
-                    print(f"Error during idle talk: {e}")
 
 #--- MAIN MATH LOGIC ---
 def pronounce_number_in_text(text):
@@ -546,70 +450,171 @@ def process_ai_command(response_text):
         return result_message
     return response_text
 
-# --- MAIN ---
-def main():
-    global is_running
-    setup_keyboard_shortcuts()
+class Assistant:
+    def __init__(self):
+        self.is_running = True
+        self.messages_history = [{'role': 'system', 'content': system_prompt}]
+        self.last_user_activity_time = time.time()
+        self.idle_talk_count = 0
+        self.chat_lock = threading.Lock()
+        self.interruption_flag = threading.Event()
+
+    # --- KEYBOARD UTILITIES ---
+    def toggle_exit(self):
+        print("\n⌨️ Exit with Ctrl+Q...")
+        self.is_running = False
+
+    def setup_keyboard_shortcuts(self):
+        keyboard.add_hotkey('ctrl+q', lambda: self.toggle_exit())
+        print("   Ctrl+Q - exit")
+
+    #--INTERACTION--
+    def ask_ollama_with_memory(self, user_input):
+    # get context from the instance we created earlier
+        relevant_context = memory.get_relevant_context(user_input, top_k=5)
+
+        full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---
+{relevant_context}
+
+--- USER MESSAGE ---
+{user_input}
+
+Respond naturally based on the memories if they are relevant."""
+
+        self.messages_history.append({'role': 'user', 'content': full_prompt})
+        if len(self.messages_history) > 11:
+            self.messages_history = [self.messages_history[0]] + self.messages_history[-10:]
+        try:
+            with self.chat_lock: # ensure only one chat at a time to prevent overlapping responses
+                self.interruption_flag.clear() # clear interruption flag before starting new response
+                response = ollama.chat(model=OLLAMA_MODEL, messages=self.messages_history, stream=True)
+
+                ai_answer = "" # we will build the answer as it streams in
+                buf = "" # buffer for incomplete sentences
+
+                for chunk in response:
+                    if self.interruption_flag.is_set():
+                        print("\n[!] Response interrupted by user.")
+                        break
+
+                    if 'message' in chunk and 'content' in chunk['message']:
+                        token = chunk['message']['content']
+                        ai_answer += token
+                        buf += token
+                        #print(token, end='', flush=True)
+                
+                        sentences, buf = flush_sentences(buf)
+                        for sentence in sentences:
+                            sentence = sentence.strip()
+                            if sentence:
+                                audio_streamer.speak(sentence)
+                                #print() # for newline after response is done
+
+            if not self.interruption_flag.is_set() and buf.strip():
+                audio_streamer.speak(buf.strip())
+
+            memory.add_memory_interaction(user_input, ai_answer)
+
+            self.messages_history.append({'role': 'assistant', 'content': ai_answer})
+            return ai_answer
     
-    # Start the audio stream
-    audio_streamer.start()
-    speak_silero("Control systems active. Awaiting commands.")
-    threading.Thread(target=autonomus_idle_talk_loop, daemon=True).start()
+        except Exception as e:
+            err = f"An error occurred: {e}"
+            audio_streamer.speak(err)
+            audio_streamer.wait_until_done()
+            return err
 
-    # choice mode input (voice/keyboard)
-    print("\n=== SELECT INPUT MODE ===")
-    print("1. Voice input (microphone)")
-    print("2. Keyboard input")
-    use_keyboard = False
-    while True:
-        choice = input("Choose mode (1 or 2): ").strip()
-        if choice in ['1', '2']:
-            use_keyboard = choice == '2'
-            break
-        print("Please enter 1 or 2")
+# --- IDLE DETECTION ---
+    def autonomus_idle_talk_loop(self):
+        while self.is_running:
+            time.sleep(5)
+            if audio_streamer.is_playing.is_set():
+                self.last_user_activity_time = time.time()  # reset idle timer if assistant is speaking
+                continue
 
-    try:
-        while is_running:
-            if use_keyboard:
-                query = input_keyboard()
-            else:
-                query = listen()
+            idle_duration = time.time() - self.last_user_activity_time
 
-            if query:
-                global last_user_activity_time, idle_talk_count
-                last_user_activity_time = time.time()  # reset idle timer on user activity
-                idle_talk_count = 0  # reset idle talk count on user activity
+            current_timeout = IDLE_TIMEOUT + (self.idle_talk_count * 20) + random.randint(5, 15)  # increase timeout with each idle talk
 
-                if any(cmd in query.lower() for cmd in ["stop", "bye"]):
-                    speak_silero("Shutting down. Goodbye.")
-                    is_running = False
-                    break
+            if idle_duration > current_timeout and self.idle_talk_count < MAX_IDLE_TALK:
+                self.idle_talk_count += 1
+                self.last_user_activity_time = time.time()  # reset timer after idle talk
+
+                idle_prompts = """You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
+
+                print(f"\n[Idle Mode] Initiating autonomous thought ({self.idle_talk_count}/{MAX_IDLE_TALK})...")
+
+                with self.chat_lock: # ensure we don't interrupt an active conversation
+                    try:
+                        response = ollama.chat(model=OLLAMA_MODEL, messages=[
+                            {'role': 'system', 'content': system_prompt}, 
+                            *self.messages_history[1:],
+                            {'role': 'user', 'content': idle_prompts}])
+                        text = response['message']['content']
+
+                        audio_streamer.speak(text)
+                    except Exception as e:
+                        print(f"Error during idle talk: {e}")
+
+    def run(self):
+        self.setup_keyboard_shortcuts()
+        audio_streamer.start()
+        speak_silero("Control systems active. Awaiting commands.")
+        threading.Thread(target=self.autonomus_idle_talk_loop, daemon=True).start()
+
+        # choice mode input (voice/keyboard)
+        print("\n=== SELECT INPUT MODE ===")
+        print("1. Voice input (microphone)")
+        print("2. Keyboard input")
+        use_keyboard = False
+        while True:
+            choice = input("Choose mode (1 or 2): ").strip()
+            if choice in ['1', '2']:
+                use_keyboard = choice == '2'
+                break
+            print("Please enter 1 or 2")
+
+        try:
+            while self.is_running:
+                if use_keyboard:
+                    query = input_keyboard()
+                else:
+                    query = listen(self.interruption_flag)
+
+                if query:
+                    self.last_user_activity_time = time.time()  # reset idle timer on user activity
+                    self.idle_talk_count = 0  # reset idle talk count on user activity
+
+                    if any(cmd in query.lower() for cmd in ["stop", "bye"]):
+                        speak_silero("Shutting down. Goodbye.")
+                        self.is_running = False
+                        break
 
                 # change mode
-                if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
-                    use_keyboard = not use_keyboard
-                    mode = "keyboard" if use_keyboard else "voice"
-                    speak_silero(f"Switched to {mode} mode")
-                    print(f"\n>>> Mode changed to: {mode}")
-                    continue
+                    if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
+                        use_keyboard = not use_keyboard
+                        mode = "keyboard" if use_keyboard else "voice"
+                        speak_silero(f"Switched to {mode} mode")
+                        print(f"\n>>> Mode changed to: {mode}")
+                        continue
 
                 # Check for math expressions first
-                math_result = calculate_math(query)
-                if math_result:
-                    print(f"🧮 Math: {query} = {math_result}")
-                    speak_silero(math_result)
-                else:
-                    local_cmd = detect_local_command(query)
-                    if local_cmd:
-                        result = process_ai_command(local_cmd)
-                        speak_silero(result)
+                    math_result = calculate_math(query)
+                    if math_result:
+                        print(f"🧮 Math: {query} = {math_result}")
+                        speak_silero(math_result)
                     else:
-                        ask_ollama_with_memory(query)
-    finally:
-        # On exit, wait for any remaining audio to finish before shutting down
-        audio_streamer.wait_until_done() 
-        audio_streamer.stop()
-        print("Shutting down.")
+                        local_cmd = detect_local_command(query)
+                        if local_cmd:
+                            result = process_ai_command(local_cmd)
+                            speak_silero(result)
+                        else:
+                            self.ask_ollama_with_memory(query)
+        finally:
+            # On exit, wait for any remaining audio to finish before shutting down
+            audio_streamer.wait_until_done() 
+            audio_streamer.stop()
+            print("Shutting down.")
 
 if __name__ == "__main__":
-    main()
+    Assistant().run()
