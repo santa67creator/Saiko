@@ -8,13 +8,13 @@ All processing is done locally, meaning **no internet connection is required** a
 
 ## ✨ Features
 
-* 100% Local & Private:** Powered by [Ollama](https://ollama.com/) (default: Gemma) for text generation, meaning your data never leaves your PC.
-* Real-time Voice Interaction:** Uses Faster-Whisper for fast speech-to-text (STT) and Silero for human-like text-to-speech (TTS).
-* Interruptible Speech:** You can interrupt the assistant while it's speaking, making conversations feel natural.
-* Vector Memory:** Remembers past interactions using ChromaDB, allowing for context-aware conversations.
-* Autonomous Idle Mode:** If you are silent for too long, Saiko will initiate "idle talk" (like a VTuber thinking out loud) to keep the interaction alive.
-* PC Control & Tools:** Can open the browser, launch notepad, and control system volume.
-* Native Math Engine:** Calculates math expressions directly without sending them to the LLM for faster and more accurate responses. 
+* 100% Local & Private: Powered by [Ollama](https://ollama.com/) (default: Gemma) for text generation, meaning your data never leaves your PC.
+* Real-time Voice Interaction: Uses Faster-Whisper for fast speech-to-text (STT) and Silero for human-like text-to-speech (TTS).
+* Interruptible Speech: You can interrupt the assistant while it's speaking, making conversations feel natural.
+* Vector Memory: Remembers past interactions using ChromaDB, allowing for context-aware conversations.
+* Autonomous Idle Mode: If you are silent for too long, Saiko will initiate "idle talk" (like a VTuber thinking out loud) to keep the interaction alive.
+* PC Control & Tools: Can open the browser, launch notepad, and control system volume.
+* Native Math Engine: Calculates math expressions directly without sending them to the LLM for faster and more accurate responses. 
 
 ## 📂 Project Structure
 
