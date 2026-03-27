@@ -146,6 +146,14 @@ class AudioStreamer:
         if not text: return
         text = strip_unsupported_chars(text)
         if not text: return
+
+        if self.stream is not None and not self.stream.active:
+            print("\n[!] Audio device changed or stream die. Restarting stream...")
+            try:
+                self.stream.close()
+            except:
+                pass
+            self.start()
         print(f"🔊 Assistant: {text}")
         # No overlap wait for previous voice to fully end
         self._tts_queue.put(text)
@@ -155,6 +163,9 @@ class AudioStreamer:
         # Wait until TTS queue is empty, no current TTS generation is happening, and no audio is playing
         self._tts_queue.join()
         while self.is_playing.is_set():
+            if self.stream is not None and not self.stream.active:
+                self.is_playing.clear()
+                break
             time.sleep(0.1)
 
     def stop_and_clear(self):
@@ -214,7 +225,7 @@ class SaikoBody:
         #just for settings
         qw = cr * cp * cy + sr * sp * sy 
         qx = sr * cp * cy - cr * sp * sy
-        qy = cr * sp * cr + sr * cp * sy
+        qy = cr * sp * cy + sr * cp * sy
         qz = cr * cp * sy - sr * sp * cy
         
         try:
@@ -240,13 +251,17 @@ class SaikoBody:
             
             #---LOGIC MOUTH--- 
             # If the audio streamer is running and the is_playing flag is active
-            if audio_streamer and audio_streamer.is_playing.is_set():
+            is_stream_alive = audio_streamer.stream is not None and audio_streamer.stream.active 
+
+            if audio_streamer and audio_streamer.is_playing.is_set() and is_stream_alive:
                 # Generate pseudo-random mouth opening to create the illusion of speech
                 self.set_blendshape("A", random.uniform(0.4, 0.9))
                 time.sleep(0.08) # Refresh rate (80 ms)
             else:
                 # If the sound is not playing, the mouth should be closed
                 self.set_blendshape("A", 0.0)
+                if audio_streamer and not is_stream_alive and audio_streamer.is_playing.is_set():
+                    audio_streamer.is_playing.clear()
                 time.sleep(0.1)
 
             #---LOGIC BODY (POSE AND BREATH)---
