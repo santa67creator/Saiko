@@ -1,3 +1,4 @@
+import math
 import ast
 import time
 import random
@@ -17,6 +18,7 @@ import numpy as np
 from num2words import num2words
 from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
+from pythonosc import udp_client
 
 # --- SETTINGS ---
 OLLAMA_MODEL = "gemma"
@@ -184,6 +186,87 @@ class AudioStreamer:
 
 # Initialize global audio streamer
 audio_streamer = AudioStreamer(SAMPLE_RATE)
+
+class SaikoBody:
+    def __init__(self, ip="127.0.0.1", port=39539):
+        self.client = udp_client.SimpleUDPClient(ip, port)
+        print(f"[*] VMC Body Bridge connected on {ip}:{port}")
+        # Start a background thread to animate the mouth
+        threading.Thread(target=self._lip_sync_loop, daemon=True).start()
+
+    def set_blendshape(self, name, value):
+        try:
+            self.client.send_message("/VMC/Ext/Blend/Val", [name, float(value)])
+            self.client.send_message("/VMC/Ext/Blend/Apply", [])
+        except Exception as e:
+            pass # Ignore network errors to avoid crashing the assistant
+
+    def set_bone(self, name, rot_x, rot_y, rot_z):
+        """Rotates the specified bone (angles in degrees)"""
+        rx, ry, rz, = math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)
+
+        # Convert to quaternions (the format required by the VMC protocol)
+        # i need this playing with parametrs
+        cy, sy = math.cos(rz * 0.5), math.sin(rz * 0.5)
+        cp, sp = math.cos(ry * 0.5), math.sin(ry * 0.5)
+        cr, sr = math.cos(rx * 0.5), math.sin(rx * 0.5)
+
+        #just for settings
+        qw = cr * cp * cy + sr * sp * sy 
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cr + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        
+        try:
+            # Send: Bone name, X,Y,Z (0) positions and rotations
+            self.client.send_message("/VMC/Ext/Bone/Pos", [name, 0.0, 0.0, 0.0, qx, qy, qz, qw])
+        except Exception:
+            pass
+
+    def _lip_sync_loop(self):
+        """A background thread that follows the sound and moves its mouth"""
+        next_blink_time = time.time() + random.uniform(2.0, 5.0)
+
+        while True:
+            current_time = time.time()
+
+            #---LOGIC BLINK---
+            if current_time >= next_blink_time:
+                # Blink: close your eyes, wait a split second, open them
+                self.set_blendshape("Blink", 1.0)
+                time.sleep(0.1)
+                self.set_blendshape("Blink", 0.0)
+                next_blink_time = time.time() + random.uniform(2.0, 6.0)
+            
+            #---LOGIC MOUTH--- 
+            # If the audio streamer is running and the is_playing flag is active
+            if audio_streamer and audio_streamer.is_playing.is_set():
+                # Generate pseudo-random mouth opening to create the illusion of speech
+                self.set_blendshape("A", random.uniform(0.4, 0.9))
+                time.sleep(0.08) # Refresh rate (80 ms)
+            else:
+                # If the sound is not playing, the mouth should be closed
+                self.set_blendshape("A", 0.0)
+                time.sleep(0.1)
+
+            #---LOGIC BODY (POSE AND BREATH)---
+            # Lower your arms from the T-pose (approximately 65-75 degrees)
+            self.set_bone("LeftUpperArm", 0, 0, 70)
+            self.set_bone("RightUpperArm", 0, 0, -70)
+
+            # Generate a smooth wave for "live" swaying
+            sway = math.sin(current_time * 1.5) * 2.0 # amplitude 2 gradus
+            head_turn = math.sin(current_time * 0.5) * 4.0 # slow turn head
+
+            # Apply the wave to the spine and head
+            self.set_bone("Spine", sway, 0, 0) # Quiet turn forward-back
+            self.set_bone("Head", -sway * 0.5, head_turn, 0) # The head compensates for the tilt of the body
+
+            # Full cycle refresh rate (~25 FPS)
+            time.sleep(0.04)
+
+# Create a global body object
+saiko_body = SaikoBody()
 
 # --- MEMORY AND PROMPT ---
 system_prompt = """[IDENTITY]
