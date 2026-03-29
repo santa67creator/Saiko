@@ -151,8 +151,8 @@ class AudioStreamer:
             print("\n[!] Audio device changed or stream die. Restarting stream...")
             try:
                 self.stream.close()
-            except:
-                pass
+            except Exception as e:
+                print(f"[Audio Error] Failed to close old stream: {e}")
             self.start()
         print(f"🔊 Assistant: {text}")
         # No overlap wait for previous voice to fully end
@@ -201,6 +201,7 @@ audio_streamer = AudioStreamer(SAMPLE_RATE)
 class SaikoBody:
     def __init__(self, ip="127.0.0.1", port=39539):
         self.client = udp_client.SimpleUDPClient(ip, port)
+        self.is_running = True
         print(f"[*] VMC Body Bridge connected on {ip}:{port}")
         # Start a background thread to animate the mouth
         threading.Thread(target=self._lip_sync_loop, daemon=True).start()
@@ -210,7 +211,7 @@ class SaikoBody:
             self.client.send_message("/VMC/Ext/Blend/Val", [name, float(value)])
             self.client.send_message("/VMC/Ext/Blend/Apply", [])
         except Exception as e:
-            pass # Ignore network errors to avoid crashing the assistant
+            print(f"[VMC Error] Failed to send blendshape {name}: {e}") # Ignore network errors to avoid crashing the assistant
 
     def set_bone(self, name, rot_x, rot_y, rot_z):
         """Rotates the specified bone (angles in degrees)"""
@@ -231,14 +232,14 @@ class SaikoBody:
         try:
             # Send: Bone name, X,Y,Z (0) positions and rotations
             self.client.send_message("/VMC/Ext/Bone/Pos", [name, 0.0, 0.0, 0.0, qx, qy, qz, qw])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[VMC Error] Failed to send bone {name}: {e}")
 
     def _lip_sync_loop(self):
         """A background thread that follows the sound and moves its mouth"""
         next_blink_time = time.time() + random.uniform(2.0, 5.0)
 
-        while True:
+        while self.is_running:
             current_time = time.time()
 
             #---LOGIC BLINK---
@@ -451,7 +452,8 @@ def pronounce_number_in_text(text):
         try:
             num = float(num_str) if '.' in num_str else int(num_str)
             return num2words(num)
-        except:
+        except Exception as e:
+            print(f"[Math Warning] Could not pronounce number: '{num_str}': {e}")
             return num_str
     return re.sub(r'-?\d+\.?\d*', replace_number, text)
 
@@ -626,6 +628,8 @@ Respond naturally based on the memories if they are relevant."""
                 print(f"\n[Idle Mode] Initiating autonomous thought ({self.idle_talk_count}/{MAX_IDLE_TALK})...")
 
                 with self.chat_lock: # ensure we don't interrupt an active conversation
+                    if not self.chat_lock.acquire(timeout=2):
+                        continue
                     try:
                         response = ollama.chat(model=OLLAMA_MODEL, messages=[
                             {'role': 'system', 'content': system_prompt}, 

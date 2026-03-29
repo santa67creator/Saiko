@@ -22,7 +22,7 @@ The repository is organized to separate the core logic from memory management an
 
 * `main_united.py`: The core application. Contains the logic for audio streaming, LLM routing, VAD, and OS commands.
 * `memory_Ai/`: Contains the ChromaDB vector database (`vector_memory/`) and `memory_manager.py` which handles saving and retrieving contextual dialogue.
-* `help tools/`: A suite of utilities to manage the assistant's brain:
+* `help_tools/`: A suite of utilities to manage the assistant's brain:
   * `edit_memory_beta.py`: Console menu to search, delete, or manually inject facts into the vector memory.
   * `view_memory_beta.py`: Displays all raw records currently stored in the database.
   * `transcribe_reference.py`: A utility to batch transcribe `.wav` files using Faster-Whisper.
