@@ -7,6 +7,10 @@ import webbrowser
 import threading
 import queue
 import subprocess
+import io
+import base64
+import mss
+from PIL import Image
 
 import re
 import torch
@@ -21,46 +25,25 @@ from faster_whisper import WhisperModel
 from pythonosc import udp_client
 
 # --- SETTINGS ---
-OLLAMA_MODEL = "gemma"
-SILERO_DEVICE = "cuda" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
+OLLAMA_MODEL = "gemma3:4b"
+SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
-
-# IDLE SETTINGS
+ASR_SAMPLING_RATE = 16000
+# --- VAD SETTINGS ---
+VAD_CONFIDENCE_THRESHOLD = 0.5 # Adjust this threshold based on your environment (higher is less sensitive)
+VAD_SILENCE_SECS = 2.0 # seconds of silence to consider the end of speech
+VAD_MAX_SECS = 10.0 # maximum recording length to prevent infinite recording
+VAD_MIN_SPEECH_SECS = 0.3 # minimum length of speech to consider valid
+# --- IDLE SETTINGS ---
 IDLE_TIMEOUT = 50  # seconds before considering idle
 MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
 
-#  --- ((FASTER)WHISPER) SETTINGS ---
-print(">>> Loading Faster-Whisper ASR model...")
-model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
-ASR_SAMPLING_RATE = 16000
-# device options: "cuda", "cpu", "mps" (Apple Silicon). compute_type options: "int8", "float16", "float32". int8 is fastest but least accurate, float32 is slowest but most accurate. Adjust based on your hardware capabilities and needs.
-
-#--- VAD SETTINGS ---
-VAD_CONFIDENCE_THRESHOLD = 0.5  # Adjust this threshold based on your environment (higher is less sensitive)
-VAD_SILENCE_SECS = 2.0  # seconds of silence to consider the end of speech
-VAD_MAX_SECS = 10.0  # maximum recording length to prevent infinite recording
-VAD_MIN_SPEECH_SECS = 0.3  # minimum length of speech to consider valid
-
-print(">>> Loading Silero VAD model...")
-model_vad, utils_vad = torch.hub.load(repo_or_dir='snakers4/silero-vad',
-                                        model='silero_vad',
-                                        force_reload=False)
-model_vad.to(torch.device(SILERO_DEVICE))
-
-# --- TTS MODEL ---
-print(">>> Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
-model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                              model='silero_tts',
-                              language='en',
-                              speaker='v3_en')
-model_tts.to(torch.device(SILERO_DEVICE))
-print(">>> Voice loaded. Assistant ready!")
-
 # --- AUDIO STREAMING CLASS ---
 class AudioStreamer:
-    def __init__(self, sample_rate):
+    def __init__(self, sample_rate, tts_model):
         self.sample_rate = sample_rate
+        self.tts_model = tts_model
         self.audio_queue = queue.Queue() 
         self.current_chunk = None
         self.stream = None
@@ -88,7 +71,7 @@ class AudioStreamer:
 
             try:
                 self._tts_busy.set()
-                audio = model_tts.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
+                audio = self.tts_model.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
                 audio_data = audio.numpy().astype(np.float32)
 
             # Apply fade in/out
@@ -171,19 +154,19 @@ class AudioStreamer:
     def stop_and_clear(self):
         """Instantly stops the sound and clears all queues"""
         self.stop_requested.set()
-
+            # Clear TTS queue
         while not self._tts_queue.empty():
             try:
                 self._tts_queue.get_nowait()
                 self._tts_queue.task_done()
             except queue.Empty:
                 break
-            # Clear audio queue
         while not self.audio_queue.empty():
             try:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
+
         self.current_chunk = None
         self.is_playing.clear()
         self.stop_requested.clear()
@@ -195,11 +178,9 @@ class AudioStreamer:
             self.stream.stop()
             self.stream.close()
 
-# Initialize global audio streamer
-audio_streamer = AudioStreamer(SAMPLE_RATE)
-
 class SaikoBody:
-    def __init__(self, ip="127.0.0.1", port=39539):
+    def __init__(self, audio_streamer, ip="127.0.0.1", port=39539):
+        self.audio_streamer = audio_streamer
         self.client = udp_client.SimpleUDPClient(ip, port)
         self.is_running = True
         print(f"[*] VMC Body Bridge connected on {ip}:{port}")
@@ -215,7 +196,7 @@ class SaikoBody:
 
     def set_bone(self, name, rot_x, rot_y, rot_z):
         """Rotates the specified bone (angles in degrees)"""
-        rx, ry, rz, = math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)
+        rx, ry, rz = math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)
 
         # Convert to quaternions (the format required by the VMC protocol)
         # i need this playing with parametrs
@@ -252,17 +233,17 @@ class SaikoBody:
             
             #---LOGIC MOUTH--- 
             # If the audio streamer is running and the is_playing flag is active
-            is_stream_alive = audio_streamer.stream is not None and audio_streamer.stream.active 
+            is_stream_alive = self.audio_streamer.stream is not None and self.audio_streamer.stream.active 
 
-            if audio_streamer and audio_streamer.is_playing.is_set() and is_stream_alive:
+            if self.audio_streamer and self.audio_streamer.is_playing.is_set() and is_stream_alive:
                 # Generate pseudo-random mouth opening to create the illusion of speech
                 self.set_blendshape("A", random.uniform(0.4, 0.9))
                 time.sleep(0.08) # Refresh rate (80 ms)
             else:
                 # If the sound is not playing, the mouth should be closed
                 self.set_blendshape("A", 0.0)
-                if audio_streamer and not is_stream_alive and audio_streamer.is_playing.is_set():
-                    audio_streamer.is_playing.clear()
+                if self.audio_streamer and not is_stream_alive and self.audio_streamer.is_playing.is_set():
+                    self.audio_streamer.is_playing.clear()
                 time.sleep(0.1)
 
             #---LOGIC BODY (POSE AND BREATH)---
@@ -280,9 +261,6 @@ class SaikoBody:
 
             # Full cycle refresh rate (~25 FPS)
             time.sleep(0.04)
-
-# Create a global body object
-saiko_body = SaikoBody()
 
 # --- MEMORY AND PROMPT ---
 system_prompt = """[IDENTITY]
@@ -307,9 +285,6 @@ If the user asks something complex, give a clear spoken answer without walls of 
 Memory context will be provided with each message.
 Use it naturally to personalize your response.
 Do not mention that memory exists unless the user asks directly."""
-
-# create a MemoryManager instance (module exports the class)
-memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
 # --- COMMANDS (OS control integration) ---
 def open_browser():
@@ -354,82 +329,6 @@ def strip_unsupported_chars(text: str) -> str | None:
     if not re.search(r'[a-zA-Z0-9]', cleaned):
         return None
     return cleaned
-
-# --- TTS / ASR ---
-def speak_silero(text):
-    """Use the audio streamer instead of direct sd.play"""
-    audio_streamer.speak(text)
-    
-def listen(interruption_flag: threading.Event):
-    print("\n🎤 Listening... (speak now)")
-    chunk_size = 512  # number of samples per chunk for VAD processing. Smaller is more responsive but more CPU intensive. 512 samples at 16kHz is about 0.032 seconds, which is a good balance for real-time VAD. Adjust if needed based on your hardware capabilities and responsiveness requirements.
-    chunk_duration = chunk_size / ASR_SAMPLING_RATE # should be 0.5 seconds
-
-    recorded_chunks = []
-    silence_duration = 0.0
-    speech_duration = 0.0
-    speech_started = False
-
-    with sd.InputStream(samplerate=ASR_SAMPLING_RATE, channels=1, dtype='float32') as stream:
-        while True:
-            chunk, _ = stream.read(chunk_size)
-            chunk_flat = chunk.flatten() # flatten to 1D array for volume calculation
-            chunk_tensor = torch.from_numpy(chunk_flat).to(torch.device(SILERO_DEVICE)) # convert to tensor and move to same device as VAD model
-
-            # get proof, what is this don't gradient for speed
-            with torch.no_grad():
-                confidence = model_vad(chunk_tensor, ASR_SAMPLING_RATE).item()
-
-            is_speech = confidence > VAD_CONFIDENCE_THRESHOLD
-
-            if is_speech:
-                if audio_streamer.is_playing.is_set():
-                    print("\n🛑 Interrupting Saiko...")
-                    audio_streamer.stop_and_clear() # stop current audio and clear queues
-                    interruption_flag.set() # We command Ollam to stop
-
-                if not speech_started:
-                    speech_started = True
-                    print("🔴 Recording...")
-                silence_duration = 0.0
-                speech_duration += chunk_duration
-                recorded_chunks.append(chunk_flat)
-            else:
-                if speech_started:
-                    silence_duration += chunk_duration
-                    recorded_chunks.append(chunk_flat)  # include silence in recording for better ASR accuracy
-
-                    if silence_duration >= VAD_SILENCE_SECS:
-                        print("⏹ Silence detected, stopping.")
-                        break
-
-            # safety check to prevent infinite recording
-            total_duration = speech_duration + silence_duration
-            if speech_started and total_duration >= VAD_MAX_SECS:
-                print("⏹ Max duration reached.")
-                break
-
-    # validate minimum speech duration
-    if speech_duration < VAD_MIN_SPEECH_SECS:
-        print("⚠️ Too short, ignoring.")
-        return None
-
-    audio = np.concatenate(recorded_chunks)
-
-    try:
-        segments, info = model_asr.transcribe(audio, beam_size=5) # beam_size can be adjusted for better accuracy (higher is better but slower)
-        text = " ".join([segment.text for segment in segments]).strip()
-
-        if text:
-            print(f"🎤 You said: {text}")
-            return text
-        return None
-    except Exception as e:
-        print(f"Error during ASR: {e}")
-        return None   
-
-def input_keyboard():
-    return input("\n👤 Enter text (or 'stop' to exit): ")
 
 # --- INTERACTION WITH OLLAMA ---
 def flush_sentences(buf:str ) -> tuple[list[str], str]:
@@ -533,16 +432,127 @@ def process_ai_command(response_text):
         return result_message
     return response_text
 
+# --- VISION TRIGGER ---
+VISION_KEYWORDS = ["look at this", "what's on my screen", "describe my screen", "what do you see", "analyze my screen"]
+
+def capture_screenshot_base64():
+    """Captures a screenshot and returns it as a base64-encoded string."""
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]  # Capture the primary monitor
+        screenshoot = sct.grab(monitor)
+        img = Image.frombytes("RGB", screenshoot.size, screenshoot.rgb, "raw", "RGB")
+        img.thumbnail((1280, 720))  # Resize to reduce size for faster processing
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG", quality=80)  # Adjust quality for smaller size
+        img_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        return img_b64
+
+def detect_vision_trigger(query: str) -> bool:
+    q = query.lower()
+    return any(kw in q for kw in VISION_KEYWORDS)
+
 class Assistant:
     def __init__(self):
+        print(">>> [1/4] Loading Faster-Whisper ASR model...")
+        self.model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
+
+        print(">>> [2/4] Loading Silero VAD model...")
+        self.model_vad, self.utils_vad = torch.hub.load(repo_or_dir='snakers4/silero-vad',
+                                        model='silero_vad',
+                                        force_reload=False)
+        self.model_vad.to(torch.device(SILERO_DEVICE))
+
+        print(">>> [3/4] Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
+        self.model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
+                              model='silero_tts',
+                              language='en',
+                              speaker='v3_en')
+        self.model_tts.to(torch.device(SILERO_DEVICE))
+
+        print(">>> [4/4] Initializing system components...")
+        self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts)
+        self.saiko_body = SaikoBody(self.audio_streamer)
+        self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
+
         self.is_running = True
         self.messages_history = [{'role': 'system', 'content': system_prompt}]
         self.last_user_activity_time = time.time()
         self.idle_talk_count = 0
         self.chat_lock = threading.Lock()
         self.interruption_flag = threading.Event()
+        
+        print(">>> Voice loaded. Assistant ready!")
+
+    def listen(self):
+        print("\n🎤 Listening... (speak now)")
+        chunk_size = 512  # number of samples per chunk for VAD processing. Smaller is more responsive but more CPU intensive. 512 samples at 16kHz is about 0.032 seconds, which is a good balance for real-time VAD. Adjust if needed based on your hardware capabilities and responsiveness requirements.
+        chunk_duration = chunk_size / ASR_SAMPLING_RATE # should be 0.5 seconds
+
+        recorded_chunks = []
+        silence_duration = 0.0
+        speech_duration = 0.0
+        speech_started = False
+
+        with sd.InputStream(samplerate=ASR_SAMPLING_RATE, channels=1, dtype='float32') as stream:
+            while True:
+                chunk, _ = stream.read(chunk_size)
+                chunk_flat = chunk.flatten() # flatten to 1D array for volume calculation
+                chunk_tensor = torch.from_numpy(chunk_flat).to(torch.device(SILERO_DEVICE)) # convert to tensor and move to same device as VAD model
+
+                # get proof, what is this don't gradient for speed
+                with torch.no_grad():
+                    confidence = self.model_vad(chunk_tensor, ASR_SAMPLING_RATE).item()
+
+                is_speech = confidence > VAD_CONFIDENCE_THRESHOLD
+
+                if is_speech:
+                    if self.audio_streamer.is_playing.is_set():
+                        print("\n🛑 Interrupting Saiko...")
+                        self.audio_streamer.stop_and_clear() # stop current audio and clear queues
+                        self.interruption_flag.set() # We command Ollam to stop
+
+                    if not speech_started:
+                        speech_started = True
+                        print("🔴 Recording...")
+                    silence_duration = 0.0
+                    speech_duration += chunk_duration
+                    recorded_chunks.append(chunk_flat)
+                else:
+                    if speech_started:
+                        silence_duration += chunk_duration
+                        recorded_chunks.append(chunk_flat)  # include silence in recording for better ASR accuracy
+
+                        if silence_duration >= VAD_SILENCE_SECS:
+                            print("⏹ Silence detected, stopping.")
+                            break
+
+                if speech_started and (speech_duration + silence_duration) >= VAD_MAX_SECS:
+                    print("⏹ Max duration reached.")
+                    break
+
+    # validate minimum speech duration
+        if speech_duration < VAD_MIN_SPEECH_SECS:
+            print("⚠️ Too short, ignoring.")
+            return None
+
+        audio = np.concatenate(recorded_chunks)
+
+        try:
+            segments, info = self.model_asr.transcribe(audio, beam_size=5) # beam_size can be adjusted for better accuracy (higher is better but slower)
+            text = " ".join([segment.text for segment in segments]).strip()
+
+            if text:
+                print(f"🎤 You said: {text}")
+                return text
+            return None
+        except Exception as e:
+            print(f"Error during ASR: {e}")
+            return None   
 
     # --- KEYBOARD UTILITIES ---
+    def input_keyboard(self):
+        return input("\n👤 Enter text (or 'stop' to exit): ")
+
     def toggle_exit(self):
         print("\n⌨️ Exit with Ctrl+Q...")
         self.is_running = False
@@ -554,7 +564,7 @@ class Assistant:
     #--INTERACTION--
     def ask_ollama_with_memory(self, user_input):
     # get context from the instance we created earlier
-        relevant_context = memory.get_relevant_context(user_input, top_k=5)
+        relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
 
         full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---
 {relevant_context}
@@ -590,28 +600,75 @@ Respond naturally based on the memories if they are relevant."""
                         for sentence in sentences:
                             sentence = sentence.strip()
                             if sentence:
-                                audio_streamer.speak(sentence)
+                                self.audio_streamer.speak(sentence)
                                 #print() # for newline after response is done
 
             if not self.interruption_flag.is_set() and buf.strip():
-                audio_streamer.speak(buf.strip())
+                self.audio_streamer.speak(buf.strip())
 
-            memory.add_memory_interaction(user_input, ai_answer)
+            self.memory.add_memory_interaction(user_input, ai_answer)
 
             self.messages_history.append({'role': 'assistant', 'content': ai_answer})
             return ai_answer
     
         except Exception as e:
             err = f"An error occurred: {e}"
-            audio_streamer.speak(err)
-            audio_streamer.wait_until_done()
+            self.audio_streamer.speak(err)
+            self.audio_streamer.wait_until_done()
+            return err
+
+    def ask_ollama_with_screenshot(self, user_input):
+        """Takes a screenshot and asks the vision model to describe / answer about it."""
+        print("[Vision] Capturing screenshot...")
+        self.audio_streamer.speak("Let me take a look at that.")
+        try:
+            img_b64 = capture_screenshot_base64()
+        except Exception as e:
+            err = f"Failed to capture screenshot: {e}"
+            self.audio_streamer.speak(err)
+            return err
+        vision_prompt = (f"You are looking at the user's screen. "
+                         f"The user says: '{user_input}'. "
+                         f"Describe what you see concisely and answer their question if any. "
+                         f"Keep the reply short, spoken-style, no markdown.")
+        try:
+            with self.chat_lock:
+                self.interruption_flag.clear()
+                response = ollama.chat(model="gemma3:4b", messages=[{'role': 'system', 'content': vision_prompt}, {'role': 'user', 'content': 'Here is my screenshot:', 'images': [img_b64]}], stream=True)
+                ai_answer = ""
+                buf = ""
+                for chunk in response:
+                    if self.interruption_flag.is_set():
+                        print("\n[!] Vision response interrupted by user.")
+                        break
+
+                    if 'message' in chunk and 'content' in chunk['message']:
+                        token = chunk['message']['content']
+                        ai_answer += token
+                        buf += token
+                        sentences, buf = flush_sentences(buf)
+                        for sentence in sentences:
+                            sentence = sentence.strip()
+                            if sentence:
+                                self.audio_streamer.speak(sentence)
+            if not self.interruption_flag.is_set() and buf.strip():
+                self.audio_streamer.speak(buf.strip())
+            # Store vision interaction in history as plain text
+            self.messages_history.append({'role': 'user', 'content': f"[Vision Input] {user_input}"})
+            self.messages_history.append({'role': 'assistant', 'content': f"[Vision Response] {ai_answer}"})
+            if len (self.messages_history) > 11:
+                self.messages_history = [self.messages_history[0]] + self.messages_history[-10:]
+            return ai_answer
+        except Exception as e:
+            err = f"An error occurred during vision processing: {e}"
+            self.audio_streamer.speak(err)
             return err
 
 # --- IDLE DETECTION ---
     def autonomus_idle_talk_loop(self):
         while self.is_running:
             time.sleep(5)
-            if audio_streamer.is_playing.is_set():
+            if self.audio_streamer.is_playing.is_set():
                 self.last_user_activity_time = time.time()  # reset idle timer if assistant is speaking
                 continue
 
@@ -627,24 +684,24 @@ Respond naturally based on the memories if they are relevant."""
 
                 print(f"\n[Idle Mode] Initiating autonomous thought ({self.idle_talk_count}/{MAX_IDLE_TALK})...")
 
-                with self.chat_lock: # ensure we don't interrupt an active conversation
-                    if not self.chat_lock.acquire(timeout=2):
-                        continue
-                    try:
-                        response = ollama.chat(model=OLLAMA_MODEL, messages=[
-                            {'role': 'system', 'content': system_prompt}, 
-                            *self.messages_history[1:],
-                            {'role': 'user', 'content': idle_prompts}])
-                        text = response['message']['content']
-
-                        audio_streamer.speak(text)
-                    except Exception as e:
-                        print(f"Error during idle talk: {e}")
+                if not self.chat_lock.acquire(timeout=2):
+                    continue
+                try:
+                    response = ollama.chat(model=OLLAMA_MODEL, messages=[
+                        {'role': 'system', 'content': system_prompt}, 
+                        *self.messages_history[1:],
+                        {'role': 'user', 'content': idle_prompts}])
+                    text = response['message']['content']
+                    self.audio_streamer.speak(text)
+                except Exception as e:
+                    print(f"Error during idle talk: {e}")
+                finally:
+                    self.chat_lock.release()
 
     def run(self):
         self.setup_keyboard_shortcuts()
-        audio_streamer.start()
-        speak_silero("Control systems active. Awaiting commands.")
+        self.audio_streamer.start()
+        self.audio_streamer.speak("Control systems active. Awaiting commands.")
         threading.Thread(target=self.autonomus_idle_talk_loop, daemon=True).start()
 
         # choice mode input (voice/keyboard)
@@ -662,16 +719,16 @@ Respond naturally based on the memories if they are relevant."""
         try:
             while self.is_running:
                 if use_keyboard:
-                    query = input_keyboard()
+                    query = self.input_keyboard()
                 else:
-                    query = listen(self.interruption_flag)
+                    query = self.listen()
 
                 if query:
                     self.last_user_activity_time = time.time()  # reset idle timer on user activity
                     self.idle_talk_count = 0  # reset idle talk count on user activity
 
                     if any(cmd in query.lower() for cmd in ["stop", "bye"]):
-                        speak_silero("Shutting down. Goodbye.")
+                        self.audio_streamer.speak("Shutting down. Goodbye.")
                         self.is_running = False
                         break
 
@@ -679,7 +736,7 @@ Respond naturally based on the memories if they are relevant."""
                     if any(cmd in query.lower() for cmd in ["switch mode", "voice", "keyboard", "microphone"]):
                         use_keyboard = not use_keyboard
                         mode = "keyboard" if use_keyboard else "voice"
-                        speak_silero(f"Switched to {mode} mode")
+                        self.audio_streamer.speak(f"Switched to {mode} mode")
                         print(f"\n>>> Mode changed to: {mode}")
                         continue
 
@@ -687,18 +744,20 @@ Respond naturally based on the memories if they are relevant."""
                     math_result = calculate_math(query)
                     if math_result:
                         print(f"🧮 Math: {query} = {math_result}")
-                        speak_silero(math_result)
+                        self.audio_streamer.speak(math_result)
+                    elif detect_vision_trigger(query):
+                        self.ask_ollama_with_screenshot(query)
                     else:
                         local_cmd = detect_local_command(query)
                         if local_cmd:
                             result = process_ai_command(local_cmd)
-                            speak_silero(result)
+                            self.audio_streamer.speak(result)
                         else:
                             self.ask_ollama_with_memory(query)
         finally:
             # On exit, wait for any remaining audio to finish before shutting down
-            audio_streamer.wait_until_done() 
-            audio_streamer.stop()
+            self.audio_streamer.wait_until_done() 
+            self.audio_streamer.stop()
             print("Shutting down.")
 
 if __name__ == "__main__":
