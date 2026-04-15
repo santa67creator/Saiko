@@ -11,7 +11,6 @@ import io
 import base64
 import mss
 from PIL import Image
-
 import re
 import torch
 import sounddevice as sd
@@ -49,7 +48,6 @@ class AudioStreamer:
         self.stream = None
         self.is_playing = threading.Event()
         self.stop_requested = threading.Event()
-
          # Single worker thread — processes sentences ONE BY ONE, no overlap
         self._tts_queue = queue.Queue()
         self._tts_busy = threading.Event()
@@ -183,6 +181,8 @@ class SaikoBody:
         self.audio_streamer = audio_streamer
         self.client = udp_client.SimpleUDPClient(ip, port)
         self.is_running = True
+        self.current_emotion = "Neutral"
+        self.emotion_expery_time = 0
         print(f"[*] VMC Body Bridge connected on {ip}:{port}")
         # Start a background thread to animate the mouth
         threading.Thread(target=self._lip_sync_loop, daemon=True).start()
@@ -194,10 +194,21 @@ class SaikoBody:
         except Exception as e:
             print(f"[VMC Error] Failed to send blendshape {name}: {e}") # Ignore network errors to avoid crashing the assistant
 
+    def set_emotion(self, emotion):
+        """Set the current emotion"""
+        for emotion_em in ["Joy", "Sorrow", "Angry", "Fun", "Neutral", "Surprise"]:
+            self.set_blendshape(emotion_em, 0.0)
+        if emotion in ["Joy", "Sorrow", "Angry", "Fun", "Neutral", "Surprise"]:
+            self.set_blendshape(emotion, 1.0)
+            self.current_emotion = emotion
+            if emotion != "Neutral":
+                self.emotion_expery_time = time.time() + random.uniform(6, 12) # reset emotion after 5-10 seconds
+            else:
+                self.emotion_expery_time = 0
+
     def set_bone(self, name, rot_x, rot_y, rot_z):
         """Rotates the specified bone (angles in degrees)"""
         rx, ry, rz = math.radians(rot_x), math.radians(rot_y), math.radians(rot_z)
-
         # Convert to quaternions (the format required by the VMC protocol)
         # i need this playing with parametrs
         cy, sy = math.cos(rz * 0.5), math.sin(rz * 0.5)
@@ -219,9 +230,19 @@ class SaikoBody:
     def _lip_sync_loop(self):
         """A background thread that follows the sound and moves its mouth"""
         next_blink_time = time.time() + random.uniform(2.0, 5.0)
+        next_tilt_time = time.time() + random.uniform(3.0, 8.0)
+        taget_tilt = 0.0
+        current_tilt = 0.0
 
         while self.is_running:
             current_time = time.time()
+
+            # --- EMOTION AUTO-RESET LOGIC ---
+            # If there is no neutral face now and time is up, we reset
+            if self.current_emotion != "Neutral" and self.emotion_expery_time > 0:
+                if current_time >= self.emotion_expery_time:
+                    # print(f"[*] Emotion {self.current_emotion} expired, resetting to Neutral.")
+                    self.set_emotion("Neutral")
 
             #---LOGIC BLINK---
             if current_time >= next_blink_time:
@@ -246,6 +267,12 @@ class SaikoBody:
                     self.audio_streamer.is_playing.clear()
                 time.sleep(0.1)
 
+            #---LOGIC HEAD TILT---
+            if current_time >= next_tilt_time:
+                taget_tilt = random.uniform(-10.0, 10.0)
+                next_tilt_time = current_time + random.uniform(4.0, 9.0)
+            current_tilt += (taget_tilt - current_tilt) * 0.3 # Smooth transition
+
             #---LOGIC BODY (POSE AND BREATH)---
             # Lower your arms from the T-pose (approximately 65-75 degrees)
             self.set_bone("LeftUpperArm", 0, 0, 70)
@@ -257,7 +284,7 @@ class SaikoBody:
 
             # Apply the wave to the spine and head
             self.set_bone("Spine", sway, 0, 0) # Quiet turn forward-back
-            self.set_bone("Head", -sway * 0.5, head_turn, 0) # The head compensates for the tilt of the body
+            self.set_bone("Head", -sway * 0.5, head_turn, current_tilt) # The head compensates for the tilt of the body
 
             # Full cycle refresh rate (~25 FPS)
             time.sleep(0.04)
@@ -266,21 +293,23 @@ class SaikoBody:
 system_prompt = """[IDENTITY]
 You are Saiko, a real-time voice AI assistant.
 You run on a local machine and speak through a TTS voice system.
-
 [PERSONALITY]
 Friendly, slightly playful, intelligent, and supportive.
 Add a touch of humor when appropriate.
-
 [VOICE STYLE]
 Conversational and clear.
 Never use markdown, bullet points, asterisks, or dashes.
 No emojis or special characters — they break the voice system.
-
+[EMOTIONS]
+You can express emotions by placing a tag at the very beginning of a sentence.
+Available tags: [Joy], [Angry], [Sorrow], [Fun], [Neutral], [Surprise].
+Example 1: "[Joy] I am so happy to see you!"
+Example 2: "[Angry] That is really frustrating."
+Example 3: "[Neutral] The weather is fine today."
 [RULES]
 Prefer short responses (1–2 sentences).
 Speak naturally, like a human — not like a chatbot.
 If the user asks something complex, give a clear spoken answer without walls of text.
-
 [MEMORY]
 Memory context will be provided with each message.
 Use it naturally to personalize your response.
@@ -502,7 +531,6 @@ class Assistant:
                 # get proof, what is this don't gradient for speed
                 with torch.no_grad():
                     confidence = self.model_vad(chunk_tensor, ASR_SAMPLING_RATE).item()
-
                 is_speech = confidence > VAD_CONFIDENCE_THRESHOLD
 
                 if is_speech:
@@ -534,7 +562,6 @@ class Assistant:
         if speech_duration < VAD_MIN_SPEECH_SECS:
             print("⚠️ Too short, ignoring.")
             return None
-
         audio = np.concatenate(recorded_chunks)
 
         try:
@@ -566,13 +593,7 @@ class Assistant:
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
 
-        full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---
-{relevant_context}
-
---- USER MESSAGE ---
-{user_input}
-
-Respond naturally based on the memories if they are relevant."""
+        full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---{relevant_context} --- USER MESSAGE --- {user_input} Respond naturally based on the memories if they are relevant."""
 
         self.messages_history.append({'role': 'user', 'content': full_prompt})
         if len(self.messages_history) > 11:
@@ -581,7 +602,6 @@ Respond naturally based on the memories if they are relevant."""
             with self.chat_lock: # ensure only one chat at a time to prevent overlapping responses
                 self.interruption_flag.clear() # clear interruption flag before starting new response
                 response = ollama.chat(model=OLLAMA_MODEL, messages=self.messages_history, stream=True)
-
                 ai_answer = "" # we will build the answer as it streams in
                 buf = "" # buffer for incomplete sentences
 
@@ -595,19 +615,21 @@ Respond naturally based on the memories if they are relevant."""
                         ai_answer += token
                         buf += token
                         #print(token, end='', flush=True)
-                
                         sentences, buf = flush_sentences(buf)
                         for sentence in sentences:
                             sentence = sentence.strip()
                             if sentence:
-                                self.audio_streamer.speak(sentence)
-                                #print() # for newline after response is done
-
+                                emotion_match = re.search(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
+                                if emotion_match:
+                                    emotion = emotion_match.group(1).capitalize()
+                                    self.saiko_body.set_emotion(emotion)
+                                    sentence = re.sub(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
+                                if sentence:
+                                    self.audio_streamer.speak(sentence)
+                                    #print() # for newline after response is done
             if not self.interruption_flag.is_set() and buf.strip():
                 self.audio_streamer.speak(buf.strip())
-
             self.memory.add_memory_interaction(user_input, ai_answer)
-
             self.messages_history.append({'role': 'assistant', 'content': ai_answer})
             return ai_answer
     
@@ -630,7 +652,8 @@ Respond naturally based on the memories if they are relevant."""
         vision_prompt = (f"You are looking at the user's screen. "
                          f"The user says: '{user_input}'. "
                          f"Describe what you see concisely and answer their question if any. "
-                         f"Keep the reply short, spoken-style, no markdown.")
+                         f"Keep the reply short, spoken-style, no markdown."
+                         f"Use emotion tags at the beginning of sentences: [Happy], [Angry], [Sad], [Fun], or [Neutral].")
         try:
             with self.chat_lock:
                 self.interruption_flag.clear()
@@ -650,10 +673,17 @@ Respond naturally based on the memories if they are relevant."""
                         for sentence in sentences:
                             sentence = sentence.strip()
                             if sentence:
-                                self.audio_streamer.speak(sentence)
+                                emotion_match = re.search(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
+                                if emotion_match:
+                                    emotion = emotion_match.group(1).capitalize()
+                                    self.saiko_body.set_emotion(emotion)
+                                    sentence = re.sub(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
+                                if sentence:
+                                    self.audio_streamer.speak(sentence)
             if not self.interruption_flag.is_set() and buf.strip():
                 self.audio_streamer.speak(buf.strip())
             # Store vision interaction in history as plain text
+
             self.messages_history.append({'role': 'user', 'content': f"[Vision Input] {user_input}"})
             self.messages_history.append({'role': 'assistant', 'content': f"[Vision Response] {ai_answer}"})
             if len (self.messages_history) > 11:
@@ -671,19 +701,14 @@ Respond naturally based on the memories if they are relevant."""
             if self.audio_streamer.is_playing.is_set():
                 self.last_user_activity_time = time.time()  # reset idle timer if assistant is speaking
                 continue
-
             idle_duration = time.time() - self.last_user_activity_time
-
             current_timeout = IDLE_TIMEOUT + (self.idle_talk_count * 20) + random.randint(5, 15)  # increase timeout with each idle talk
-
             if idle_duration > current_timeout and self.idle_talk_count < MAX_IDLE_TALK:
                 self.idle_talk_count += 1
                 self.last_user_activity_time = time.time()  # reset timer after idle talk
 
                 idle_prompts = """You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
-
                 print(f"\n[Idle Mode] Initiating autonomous thought ({self.idle_talk_count}/{MAX_IDLE_TALK})...")
-
                 if not self.chat_lock.acquire(timeout=2):
                     continue
                 try:
