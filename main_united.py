@@ -502,14 +502,12 @@ class Assistant:
         self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts)
         self.saiko_body = SaikoBody(self.audio_streamer)
         self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
-
         self.is_running = True
         self.messages_history = [{'role': 'system', 'content': system_prompt}]
         self.last_user_activity_time = time.time()
         self.idle_talk_count = 0
         self.chat_lock = threading.Lock()
         self.interruption_flag = threading.Event()
-        
         print(">>> Voice loaded. Assistant ready!")
 
     def listen(self):
@@ -649,9 +647,10 @@ class Assistant:
             err = f"Failed to capture screenshot: {e}"
             self.audio_streamer.speak(err)
             return err
-        vision_prompt = (f"You are looking at the user's screen. "
-                         f"The user says: '{user_input}'. "
-                         f"Describe what you see concisely and answer their question if any. "
+        vision_prompt = (f"You are looking at the user's screen."
+                         f"The user says: '{user_input}'."
+                         f"Describe what you see concisely and answer their question if any."
+                         f"If there is visible text on the screen, try to read it."
                          f"Keep the reply short, spoken-style, no markdown."
                          f"Use emotion tags at the beginning of sentences: [Happy], [Angry], [Sad], [Fun], or [Neutral].")
         try:
