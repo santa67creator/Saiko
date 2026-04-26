@@ -14,7 +14,7 @@ from PIL import Image
 import re
 import torch
 import sounddevice as sd
-import ollama
+from llama_cpp import Llama 
 import pyautogui
 import keyboard
 import numpy as np
@@ -23,8 +23,13 @@ from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
 from pythonosc import udp_client
 
-# --- SETTINGS ---
-OLLAMA_MODEL = "gemma3:4b"
+# --- SETTINGS LLM ---
+LLM_MODEL_PATH = "models/gemma-2-2b-it-Q5_K_S.gguf"
+LLM_N_GPU_LAYERS = 0 # -1 = all layers on GPU
+LLM_N_THREADS = 4 # number of CPU threads
+LLM_N_CTX = 4096 # context window size
+LLM_MAX_TOKENS = 512 # maximum tokens in response
+#--- SETTINGS (maybe OLLAMA) ---
 SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
@@ -502,8 +507,12 @@ class Assistant:
         self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts)
         self.saiko_body = SaikoBody(self.audio_streamer)
         self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
+
+        print(">>> [5/5] Loading Llama.cpp model")
+        self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False)
+
         self.is_running = True
-        self.messages_history = [{'role': 'system', 'content': system_prompt}]
+        self.messages_history = []
         self.last_user_activity_time = time.time()
         self.idle_talk_count = 0
         self.chat_lock = threading.Lock()
@@ -590,8 +599,10 @@ class Assistant:
     def ask_ollama_with_memory(self, user_input):
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
-
-        full_prompt = f"""--- PROCESSED MEMORY (SUMMARY) ---{relevant_context} --- USER MESSAGE --- {user_input} Respond naturally based on the memories if they are relevant."""
+        if not self.messages_history:
+            full_prompt = f"{system_prompt}\n\n--- PROCESSED MEMORY (SUMMARY) ---\n{relevant_context}\n--- USER MESSAGE ---\n{user_input}\nRespond naturally based on the memories if they are relevant."
+        else:
+            full_prompt = f"--- PROCESSED MEMORY (SUMMARY) ---\n{relevant_context}\n--- USER MESSAGE ---\n{user_input}\nRespond naturally based on the memories if they are relevant."
 
         self.messages_history.append({'role': 'user', 'content': full_prompt})
         if len(self.messages_history) > 11:
@@ -599,7 +610,7 @@ class Assistant:
         try:
             with self.chat_lock: # ensure only one chat at a time to prevent overlapping responses
                 self.interruption_flag.clear() # clear interruption flag before starting new response
-                response = ollama.chat(model=OLLAMA_MODEL, messages=self.messages_history, stream=True)
+                response = self.llm.create_chat_completion(messages=self.messages_history, max_tokens=LLM_MAX_TOKENS, stream=True)
                 ai_answer = "" # we will build the answer as it streams in
                 buf = "" # buffer for incomplete sentences
 
@@ -608,8 +619,8 @@ class Assistant:
                         print("\n[!] Response interrupted by user.")
                         break
 
-                    if 'message' in chunk and 'content' in chunk['message']:
-                        token = chunk['message']['content']
+                    token = chunk['choices'][0]['delta'].get('content', '')
+                    if token:
                         ai_answer += token
                         buf += token
                         #print(token, end='', flush=True)
@@ -656,7 +667,7 @@ class Assistant:
         try:
             with self.chat_lock:
                 self.interruption_flag.clear()
-                response = ollama.chat(model="gemma3:4b", messages=[{'role': 'system', 'content': vision_prompt}, {'role': 'user', 'content': 'Here is my screenshot:', 'images': [img_b64]}], stream=True)
+                response = self.llm.create_chat_completion(messages=[{'role': 'system', 'content': vision_prompt}, {'role': 'user', 'content': 'Here is my screenshot:' + img_b64[:100] + '...'}], max_tokens=LLM_MAX_TOKENS, stream=True)
                 ai_answer = ""
                 buf = ""
                 for chunk in response:
@@ -664,8 +675,8 @@ class Assistant:
                         print("\n[!] Vision response interrupted by user.")
                         break
 
-                    if 'message' in chunk and 'content' in chunk['message']:
-                        token = chunk['message']['content']
+                    token = chunk['choices'][0]['delta'].get('content', '')
+                    if token:
                         ai_answer += token
                         buf += token
                         sentences, buf = flush_sentences(buf)
@@ -711,11 +722,12 @@ class Assistant:
                 if not self.chat_lock.acquire(timeout=2):
                     continue
                 try:
-                    response = ollama.chat(model=OLLAMA_MODEL, messages=[
+                    combined_idle_prompt = f"{system_prompt}\n\n{idle_prompts}"
+                    response = self.llm.create_chat_completion(messages=[
                         {'role': 'system', 'content': system_prompt}, 
                         *self.messages_history[1:],
-                        {'role': 'user', 'content': idle_prompts}])
-                    text = response['message']['content']
+                        {'role': 'user', 'content': combined_idle_prompt}], max_tokens = 80)
+                    text = response['choices'][0]['message']['content']
                     self.audio_streamer.speak(text)
                 except Exception as e:
                     print(f"Error during idle talk: {e}")
