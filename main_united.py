@@ -22,6 +22,7 @@ from num2words import num2words
 from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
 from pythonosc import udp_client
+from transformers import AutoModelForCausalLM
 
 # --- SETTINGS LLM ---
 LLM_MODEL_PATH = "models/gemma-2-2b-it-Q5_K_S.gguf"
@@ -29,7 +30,9 @@ LLM_N_GPU_LAYERS = 0 # -1 = all layers on GPU
 LLM_N_THREADS = 4 # number of CPU threads
 LLM_N_CTX = 4096 # context window size
 LLM_MAX_TOKENS = 512 # maximum tokens in response
-#--- SETTINGS (maybe OLLAMA) ---
+# --- VISION SETTINGS (Moondream2) ---
+VISION_DEVICE = "cuda" # "cpu"
+#--- SETTINGS (silero) ---
 SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
 SPEAKER = "en_0"
@@ -480,6 +483,15 @@ def capture_screenshot_base64():
         img.save(buffered, format="PNG", quality=80)  # Adjust quality for smaller size
         img_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
         return img_b64
+    
+def capture_screenshot_pil():
+    """Captures a screenshot and returns PIL Image — для Moondream2."""
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        screenshot = sct.grab(monitor)
+        img = Image.frombytes("RGB", screenshot.size, screenshot.rgb, "raw", "RGB")
+        img.thumbnail((1280, 720))
+        return img
 
 def detect_vision_trigger(query: str) -> bool:
     q = query.lower()
@@ -511,6 +523,9 @@ class Assistant:
         print(">>> [5/5] Loading Llama.cpp model")
         self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False)
 
+        print(">>> [6/6] Loading Moondream2 vision model...")
+        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=VISION_DEVICE,)
+        print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]")
         self.is_running = True
         self.messages_history = []
         self.last_user_activity_time = time.time()
@@ -653,21 +668,36 @@ class Assistant:
         print("[Vision] Capturing screenshot...")
         self.audio_streamer.speak("Let me take a look at that.")
         try:
-            img_b64 = capture_screenshot_base64()
+            img = capture_screenshot_pil()
         except Exception as e:
             err = f"Failed to capture screenshot: {e}"
             self.audio_streamer.speak(err)
             return err
-        vision_prompt = (f"You are looking at the user's screen."
-                         f"The user says: '{user_input}'."
-                         f"Describe what you see concisely and answer their question if any."
-                         f"If there is visible text on the screen, try to read it."
-                         f"Keep the reply short, spoken-style, no markdown."
-                         f"Use emotion tags at the beginning of sentences: [Happy], [Angry], [Sad], [Fun], or [Neutral].")
+        try:
+            print("[Vision] Moondream2 analyzing screenshot...")
+            enoded_img = self.model_vision.encode_image(img)
+            vision_question = (f"The user said: '{user_input}'. "
+                f"Look at this screenshot and answer concisely. "
+                f"If there is text visible, read it. "
+                f"Keep the answer short, 1-2 sentences, plain text only.")
+            vision_result = self.model_vision.query(enoded_img, vision_question)
+            visual_description = vision_result['answer']
+            print(f"[Vision] Description: {visual_description}")
+        except Exception as e:
+            err = f"An error occurred during vision processing: {e}"
+            self.audio_streamer.speak(err)
+            return err
+
         try:
             with self.chat_lock:
                 self.interruption_flag.clear()
-                response = self.llm.create_chat_completion(messages=[{'role': 'system', 'content': vision_prompt}, {'role': 'user', 'content': 'Here is my screenshot:' + img_b64[:100] + '...'}], max_tokens=LLM_MAX_TOKENS, stream=True)
+                vision_prompt = (f"You just looked at the user's screen."
+                                 f"The vision model described it as: '{visual_description}'."
+                         f"The user asked: '{user_input}'."
+                         f"Respond as Saiko in 1-2 natural spoken sentences. No markdown."
+                         f"Start with one emotion tag: [Joy], [Sorrow], [Angry], [Fun], [Neutral], or [Surprise].")
+                combined_vision_prompt = f"{system_prompt}\n\n{vision_prompt}"
+                response = self.llm.create_chat_completion(messages=[{'role': 'user', 'content': combined_vision_prompt}], max_tokens=LLM_MAX_TOKENS, stream=True)
                 ai_answer = ""
                 buf = ""
                 for chunk in response:
@@ -724,9 +754,7 @@ class Assistant:
                 try:
                     combined_idle_prompt = f"{system_prompt}\n\n{idle_prompts}"
                     response = self.llm.create_chat_completion(messages=[
-                        {'role': 'system', 'content': system_prompt}, 
-                        *self.messages_history[1:],
-                        {'role': 'user', 'content': combined_idle_prompt}], max_tokens = 80)
+                        *self.messages_history[-2:], {'role': 'user', 'content': combined_idle_prompt}], max_tokens = 80)
                     text = response['choices'][0]['message']['content']
                     self.audio_streamer.speak(text)
                 except Exception as e:
