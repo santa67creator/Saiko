@@ -25,13 +25,14 @@ from pythonosc import udp_client
 from transformers import AutoModelForCausalLM
 
 # --- SETTINGS LLM ---
-LLM_MODEL_PATH = "models/gemma-2-2b-it-Q5_K_S.gguf"
+LLM_MODEL_PATH = "models/gemma-3n-E2B-it-Q5_K_M.gguf"
 LLM_N_GPU_LAYERS = 0 # -1 = all layers on GPU
 LLM_N_THREADS = 4 # number of CPU threads
 LLM_N_CTX = 4096 # context window size
 LLM_MAX_TOKENS = 512 # maximum tokens in response
 # --- VISION SETTINGS (Moondream2) ---
 VISION_DEVICE = "cuda" # "cpu"
+VISION_LOCAL_ONLY = True # False internet, True local cache, ordinary it's internet
 #--- SETTINGS (silero) ---
 SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
@@ -485,12 +486,12 @@ def capture_screenshot_base64():
         return img_b64
     
 def capture_screenshot_pil():
-    """Captures a screenshot and returns PIL Image — для Moondream2."""
+    """Captures a screenshot and returns PIL Image for Moondream2."""
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         screenshot = sct.grab(monitor)
         img = Image.frombytes("RGB", screenshot.size, screenshot.rgb, "raw", "RGB")
-        img.thumbnail((1280, 720))
+        img.thumbnail((768, 768))
         return img
 
 def detect_vision_trigger(query: str) -> bool:
@@ -499,32 +500,33 @@ def detect_vision_trigger(query: str) -> bool:
 
 class Assistant:
     def __init__(self):
-        print(">>> [1/4] Loading Faster-Whisper ASR model...")
+        print(">>> [1/6] Loading Faster-Whisper ASR model...")
         self.model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
 
-        print(">>> [2/4] Loading Silero VAD model...")
+        print(">>> [2/6] Loading Silero VAD model...")
         self.model_vad, self.utils_vad = torch.hub.load(repo_or_dir='snakers4/silero-vad',
                                         model='silero_vad',
                                         force_reload=False)
         self.model_vad.to(torch.device(SILERO_DEVICE))
 
-        print(">>> [3/4] Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
+        print(">>> [3/6] Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
         self.model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
                               model='silero_tts',
                               language='en',
                               speaker='v3_en')
         self.model_tts.to(torch.device(SILERO_DEVICE))
 
-        print(">>> [4/4] Initializing system components...")
+        print(">>> [4/6] Initializing system components...")
         self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts)
         self.saiko_body = SaikoBody(self.audio_streamer)
         self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
-        print(">>> [5/5] Loading Llama.cpp model")
+        print(">>> [5/6] Loading Llama.cpp model")
         self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False)
 
         print(">>> [6/6] Loading Moondream2 vision model...")
-        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=VISION_DEVICE,)
+        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=VISION_DEVICE, local_files_only=VISION_LOCAL_ONLY,) # "moondream/starmie-v1", "vikhyatk/moondream2"
+        self.model_vision = torch.compile(self.model_vision) # PyTorch 2.0 compilation for faster inference
         print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]")
         self.is_running = True
         self.messages_history = []
