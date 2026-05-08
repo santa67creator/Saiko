@@ -7,8 +7,6 @@ import webbrowser
 import threading
 import queue
 import subprocess
-import io
-import base64
 import mss
 from PIL import Image
 import re
@@ -59,7 +57,6 @@ class AudioStreamer:
         self.stop_requested = threading.Event()
          # Single worker thread — processes sentences ONE BY ONE, no overlap
         self._tts_queue = queue.Queue()
-        self._tts_busy = threading.Event()
         self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
         self._tts_thread.start()
         self.lock = threading.Lock()
@@ -77,7 +74,6 @@ class AudioStreamer:
                 continue
 
             try:
-                self._tts_busy.set()
                 audio = self.tts_model.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
                 audio_data = audio.numpy().astype(np.float32)
 
@@ -91,7 +87,6 @@ class AudioStreamer:
                     self.is_playing.set()
                 
             finally:
-                self._tts_busy.clear()
                 self._tts_queue.task_done()
         
     def audio_callback(self, outdata, frames, time, status):
@@ -472,18 +467,6 @@ def process_ai_command(response_text):
 
 # --- VISION TRIGGER ---
 VISION_KEYWORDS = ["look at this", "what's on my screen", "describe my screen", "what do you see", "analyze my screen"]
-
-def capture_screenshot_base64():
-    """Captures a screenshot and returns it as a base64-encoded string."""
-    with mss.mss() as sct:
-        monitor = sct.monitors[1]  # Capture the primary monitor
-        screenshoot = sct.grab(monitor)
-        img = Image.frombytes("RGB", screenshoot.size, screenshoot.rgb, "raw", "RGB")
-        img.thumbnail((1280, 720))  # Resize to reduce size for faster processing
-        buffered = io.BytesIO()
-        img.save(buffered, format="PNG", quality=80)  # Adjust quality for smaller size
-        img_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-        return img_b64
     
 def capture_screenshot_pil():
     """Captures a screenshot and returns PIL Image for Moondream2."""
@@ -529,7 +512,7 @@ class Assistant:
         self.model_vision = torch.compile(self.model_vision) # PyTorch 2.0 compilation for faster inference
         print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]")
         self.is_running = True
-        self.messages_history = []
+        self.messages_history = [{'role': 'system', 'content': system_prompt}]
         self.last_user_activity_time = time.time()
         self.idle_talk_count = 0
         self.chat_lock = threading.Lock()
@@ -616,13 +599,12 @@ class Assistant:
     def ask_ollama_with_memory(self, user_input):
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
-        if not self.messages_history:
-            full_prompt = f"{system_prompt}\n\n--- PROCESSED MEMORY (SUMMARY) ---\n{relevant_context}\n--- USER MESSAGE ---\n{user_input}\nRespond naturally based on the memories if they are relevant."
-        else:
-            full_prompt = f"--- PROCESSED MEMORY (SUMMARY) ---\n{relevant_context}\n--- USER MESSAGE ---\n{user_input}\nRespond naturally based on the memories if they are relevant."
-
+        if not self.messages_history or self.messages_history[0]['role'] != 'system':
+            self.messages_history.insert(0, {'role': 'system', 'content': system_prompt})
+        full_prompt = f"--- MEMORY ---\n{relevant_context}\n--- USER ---\n{user_input}"
         self.messages_history.append({'role': 'user', 'content': full_prompt})
-        if len(self.messages_history) > 11:
+        
+        if len(self.messages_history) > 12:
             self.messages_history = [self.messages_history[0]] + self.messages_history[-10:]
         try:
             with self.chat_lock: # ensure only one chat at a time to prevent overlapping responses
