@@ -1,7 +1,9 @@
 import chromadb
-
+import os
+import time
 def main_menu():
-    client = chromadb.PersistentClient(path="memory_Ai/vector_memory")
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    client = chromadb.PersistentClient(path=os.path.join(BASE_DIR, "memory_AI"))
     try:
         collection = client.get_collection(name="saiko_memory")
     except Exception as e:
@@ -40,7 +42,6 @@ def main_menu():
                 
         elif choice == '3':
             new_fact = input("Enter the new fact you want to add (e.g., 'User fact: My name is SanSan'): ")
-            import time
             new_id = f"manual_{int(time.time())}"
             collection.add(documents=[new_fact], ids=[new_id])
             print(f"✅ Fact added with ID: {new_id}")

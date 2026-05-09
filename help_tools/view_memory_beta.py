@@ -1,9 +1,8 @@
 import chromadb
-
+import os
 def view_all_memory():
-    # Подключаемся к твоей векторной папке
-    client = chromadb.PersistentClient(path="memory_Ai/vector_memory")
-    
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    client = chromadb.PersistentClient(path=os.path.join(BASE_DIR, "memory_AI"))
     try:
         # Пытаемся получить нашу коллекцию
         collection = client.get_collection(name="saiko_memory")

@@ -47,9 +47,10 @@ MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until us
 
 # --- AUDIO STREAMING CLASS ---
 class AudioStreamer:
-    def __init__(self, sample_rate, tts_model):
+    def __init__(self, sample_rate, tts_model, tts_model_ru):
         self.sample_rate = sample_rate
         self.tts_model = tts_model
+        self.tts_model_ru = tts_model_ru
         self.audio_queue = queue.Queue() 
         self.current_chunk = None
         self.stream = None
@@ -74,7 +75,10 @@ class AudioStreamer:
                 continue
 
             try:
-                audio = self.tts_model.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
+                if bool(re.search(r'[а-яА-Я]', sentence)):
+                    audio = self.tts_model_ru.apply_tts(text=sentence, speaker="kseniya", sample_rate=self.sample_rate)
+                else:
+                    audio = self.tts_model.apply_tts(text=sentence, speaker=SPEAKER, sample_rate=self.sample_rate)
                 audio_data = audio.numpy().astype(np.float32)
 
             # Apply fade in/out
@@ -127,7 +131,7 @@ class AudioStreamer:
         self.stream.start()
         print("🔊 Audio stream started")
 
-    def speak(self, text):
+    def speak(self, text, emotion=None):
         if not text: return
         text = strip_unsupported_chars(text)
         if not text: return
@@ -138,9 +142,12 @@ class AudioStreamer:
                 self.stream.close()
             except Exception as e:
                 print(f"[Audio Error] Failed to close old stream: {e}")
-            self.start()
-        print(f"🔊 Assistant: {text}")
-        # No overlap wait for previous voice to fully end
+            self.start() # No overlap wait for previous voice to fully end
+        if emotion:
+            print(f"🔊 Assistant ({emotion}): {text}")
+        else:
+            print(f"🔊 Assistant: {text}")
+    
         self._tts_queue.put(text)
 
     def wait_until_done(self):
@@ -297,6 +304,10 @@ class SaikoBody:
 system_prompt = """[IDENTITY]
 You are Saiko, a real-time voice AI assistant.
 You run on a local machine and speak through a TTS voice system.
+[LANGUAGE]
+You are bilingual. You MUST respond in the EXACT SAME LANGUAGE the user speaks to you.
+If the user speaks English, reply in English.
+If the user speaks Russian, reply in Russian.
 [PERSONALITY]
 Friendly, slightly playful, intelligent, and supportive.
 Add a touch of humor when appropriate.
@@ -355,11 +366,11 @@ commands = {
 
 def strip_unsupported_chars(text: str) -> str | None:
     # delete emoji,  Unicode
-    text = re.sub(r'[^\x00-\x7F]+', '', text)
-    text = re.sub(r'[^a-zA-Z0-9\s.,?!;:\'-]', '', text)
+    text = re.sub(r'[^\x00-\x7F\u0400-\u04FF]+', '', text)
+    text = re.sub(r'[^a-zA-Zа-яА-ЯёЁ0-9\s.,?!;:\'-]', '', text)
     cleaned = text.strip()
     # if the cleaned text is empty or contains no alphanumeric characters, return None
-    if not re.search(r'[a-zA-Z0-9]', cleaned):
+    if not re.search(r'[a-zA-Zа-яА-ЯёЁ0-9]', cleaned):
         return None
     return cleaned
 
@@ -378,18 +389,19 @@ def flush_sentences(buf:str ) -> tuple[list[str], str]:
     return complete_sentences, remaining_buf
 
 #--- MAIN MATH LOGIC ---
-def pronounce_number_in_text(text):
+def pronounce_number_in_text(text, lang='en'):
     def replace_number(match):
         num_str = match.group(0)
         try:
             num = float(num_str) if '.' in num_str else int(num_str)
-            return num2words(num)
+            return num2words(num, lang=lang)
         except Exception as e:
             print(f"[Math Warning] Could not pronounce number: '{num_str}': {e}")
             return num_str
     return re.sub(r'-?\d+\.?\d*', replace_number, text)
 
 def calculate_math(query):
+    calc_lang = 'ru' if bool(re.search(r'[а-яА-Я]', query)) else 'en'
     """Detect and calculate math expressions with pronounced numbers"""
     # convert word operators to symbols for easier parsing
     word_to_op = {
@@ -435,8 +447,11 @@ def calculate_math(query):
                         if result.is_integer():
                             result = int(result)
                     # Pronounce the result
-                    pronounced_result = pronounce_number_in_text(str(result))
-                    return f"The answer is {pronounced_result}"
+                    pronounced_result = pronounce_number_in_text(str(result), lang=calc_lang)
+                    if calc_lang == 'ru':
+                        return f"Ответ: {pronounced_result}"
+                    else:
+                        return f"The answer is {pronounced_result}"
                 except ZeroDivisionError:
                     return "I cannot divide by zero"
                 except Exception as e:
@@ -492,15 +507,21 @@ class Assistant:
                                         force_reload=False)
         self.model_vad.to(torch.device(SILERO_DEVICE))
 
-        print(">>> [3/6] Loading Silero TTS voice model... (if already loaded in another module, it will be reloaded)")
+        print(">>> [3/6] Loading Silero TTS voice model... EN and RU (if already loaded in another module, it will be reloaded)")
         self.model_tts, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
                               model='silero_tts',
                               language='en',
                               speaker='v3_en')
         self.model_tts.to(torch.device(SILERO_DEVICE))
 
+        self.model_tts_ru, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
+                                  model='silero_tts',
+                                  language='ru',
+                                  speaker='v4_ru')
+        self.model_tts_ru.to(torch.device(SILERO_DEVICE))
+
         print(">>> [4/6] Initializing system components...")
-        self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts)
+        self.audio_streamer = AudioStreamer(SAMPLE_RATE, self.model_tts, self.model_tts_ru)
         self.saiko_body = SaikoBody(self.audio_streamer)
         self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
@@ -628,12 +649,13 @@ class Assistant:
                             sentence = sentence.strip()
                             if sentence:
                                 emotion_match = re.search(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
+                                current_emotion = None
                                 if emotion_match:
-                                    emotion = emotion_match.group(1).capitalize()
-                                    self.saiko_body.set_emotion(emotion)
+                                    current_emotion = emotion_match.group(1).capitalize()
+                                    self.saiko_body.set_emotion(current_emotion)
                                     sentence = re.sub(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
                                 if sentence:
-                                    self.audio_streamer.speak(sentence)
+                                    self.audio_streamer.speak(sentence, emotion=current_emotion)
                                     #print() # for newline after response is done
             if not self.interruption_flag.is_set() and buf.strip():
                 self.audio_streamer.speak(buf.strip())
@@ -698,12 +720,13 @@ class Assistant:
                             sentence = sentence.strip()
                             if sentence:
                                 emotion_match = re.search(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
+                                current_emotion = None
                                 if emotion_match:
-                                    emotion = emotion_match.group(1).capitalize()
-                                    self.saiko_body.set_emotion(emotion)
+                                    current_emotion = emotion_match.group(1).capitalize()
+                                    self.saiko_body.set_emotion(current_emotion)
                                     sentence = re.sub(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
                                 if sentence:
-                                    self.audio_streamer.speak(sentence)
+                                    self.audio_streamer.speak(sentence, emotion=current_emotion)
             if not self.interruption_flag.is_set() and buf.strip():
                 self.audio_streamer.speak(buf.strip())
             # Store vision interaction in history as plain text

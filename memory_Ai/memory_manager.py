@@ -1,8 +1,10 @@
 import chromadb
 import time
-
+import os
 class VectoryManagerMemory:
-    def __init__(self, persistence_dir="./vector_memory"):
+    def __init__(self, persistence_dir=None):
+        if persistence_dir is None:
+            persistence_dir = os.path.dirname(os.path.abspath(__file__))
         # Initialize ChromaDB client and collection for memory storage
         self.client = chromadb.PersistentClient(path=persistence_dir)
         
@@ -27,7 +29,7 @@ class VectoryManagerMemory:
 
         results = self.collection.query(
             query_texts=[current_query],
-            n_results=top_k
+            n_results=limit
         )
         if results and results["documents"] and len(results["documents"][0]) > 0:
             return "\n".join(results["documents"][0])  # Join top results into a single string
