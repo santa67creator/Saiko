@@ -5,6 +5,7 @@ import random
 import platform
 import webbrowser
 import threading
+import requests
 import queue
 import subprocess
 import mss
@@ -16,6 +17,7 @@ from llama_cpp import Llama
 import pyautogui
 import keyboard
 import numpy as np
+from datetime import datetime
 from num2words import num2words
 from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
@@ -23,7 +25,7 @@ from pythonosc import udp_client
 from transformers import AutoModelForCausalLM
 
 # --- SETTINGS LLM ---
-LLM_MODEL_PATH = "models/gemma-3n-E2B-it-Q5_K_M.gguf"
+LLM_MODEL_PATH = "models/google_gemma-3-4b-it-Q5_K_M.gguf"
 LLM_N_GPU_LAYERS = 0 # -1 = all layers on GPU
 LLM_N_THREADS = 4 # number of CPU threads
 LLM_N_CTX = 4096 # context window size
@@ -144,7 +146,7 @@ class AudioStreamer:
                 print(f"[Audio Error] Failed to close old stream: {e}")
             self.start() # No overlap wait for previous voice to fully end
         if emotion:
-            print(f"🔊 Assistant ({emotion}): {text}")
+            print(f"🔊 Assistant [{emotion}]: {text}")
         else:
             print(f"🔊 Assistant: {text}")
     
@@ -213,7 +215,7 @@ class SaikoBody:
             self.set_blendshape(emotion, 1.0)
             self.current_emotion = emotion
             if emotion != "Neutral":
-                self.emotion_expery_time = time.time() + random.uniform(6, 12) # reset emotion after 5-10 seconds
+                self.emotion_expery_time = time.time() + random.uniform(2.5, 5) # reset emotion after 5-10 seconds
             else:
                 self.emotion_expery_time = 0
 
@@ -242,8 +244,13 @@ class SaikoBody:
         """A background thread that follows the sound and moves its mouth"""
         next_blink_time = time.time() + random.uniform(2.0, 5.0)
         next_tilt_time = time.time() + random.uniform(3.0, 8.0)
+        next_eye_move_time = time.time() + random.uniform(1.0, 3.0)
         taget_tilt = 0.0
         current_tilt = 0.0
+
+        target_eye_x, target_eye_y = 0.0, 0.0
+        current_eye_x, current_eye_y = 0.0, 0.0
+        visemes = ["A", "I", "U", "E", "O"]
 
         while self.is_running:
             current_time = time.time()
@@ -258,26 +265,44 @@ class SaikoBody:
             #---LOGIC BLINK---
             if current_time >= next_blink_time:
                 # Blink: close your eyes, wait a split second, open them
-                self.set_blendshape("Blink", 1.0)
-                time.sleep(0.1)
-                self.set_blendshape("Blink", 0.0)
-                next_blink_time = time.time() + random.uniform(2.0, 6.0)
+                if self.current_emotion not in ["Sorrow", "Joy", "Fun"]: # Don't blink when joy or angry for more dramatic effect
+                    self.set_blendshape("Blink", 1.0)
+                    time.sleep(0.1)
+                    self.set_blendshape("Blink", 0.0)
+                    next_blink_time = time.time() + random.uniform(2.0, 6.0)
             
+            #---LOGIC EYE MOVEMENT---
+            if current_time >= next_eye_move_time:
+                target_eye_x = random.uniform(-6.0, 6.0) # look left-right
+                target_eye_y = random.uniform(-4.0, 4.0) # look up-down
+                next_eye_move_time = current_time + random.uniform(1.0, 4.0)
+
+            current_eye_x += (target_eye_x - current_eye_x) * 0.3 # smooth transition
+            current_eye_y += (target_eye_y - current_eye_y) * 0.3
+
+            self.set_bone("LeftEye", current_eye_y, current_eye_x, 0)
+            self.set_bone("RightEye", current_eye_y, current_eye_x, 0)
+
             #---LOGIC MOUTH--- 
             # If the audio streamer is running and the is_playing flag is active
             is_stream_alive = self.audio_streamer.stream is not None and self.audio_streamer.stream.active 
 
             if self.audio_streamer and self.audio_streamer.is_playing.is_set() and is_stream_alive:
                 # Generate pseudo-random mouth opening to create the illusion of speech
-                self.set_blendshape("A", random.uniform(0.4, 0.9))
-                time.sleep(0.08) # Refresh rate (80 ms)
+                active_viseme = random.choice(visemes)
+                weight = random.uniform(0.4, 0.9) # how wide the mouth opens
+                for v in visemes:
+                    if v == active_viseme:
+                        self.set_blendshape(v, weight)
+                    else:
+                        self.set_blendshape(v, 0.0)
+                time.sleep(0.08)
             else:
-                # If the sound is not playing, the mouth should be closed
-                self.set_blendshape("A", 0.0)
-                if self.audio_streamer and not is_stream_alive and self.audio_streamer.is_playing.is_set():
-                    self.audio_streamer.is_playing.clear()
-                time.sleep(0.1)
-
+                for v in visemes:
+                    self.set_blendshape(v, 0.0)
+                if self.audio_streamer and not self.audio_streamer.is_playing.is_set():
+                    self.audio_streamer.is_playing.clear() # ensure flag is cleared when not speaking
+                time.sleep(0.1) # when not speaking, update less frequently to save CPU    
             #---LOGIC HEAD TILT---
             if current_time >= next_tilt_time:
                 taget_tilt = random.uniform(-10.0, 10.0)
@@ -286,16 +311,32 @@ class SaikoBody:
 
             #---LOGIC BODY (POSE AND BREATH)---
             # Lower your arms from the T-pose (approximately 65-75 degrees)
-            self.set_bone("LeftUpperArm", 0, 0, 70)
-            self.set_bone("RightUpperArm", 0, 0, -70)
+            slow_wave = math.sin(current_time * 0.5) # * 3.0 # slow breathing effect
+            fast_wave = math.sin(current_time * 1.5) # * 1.0 # faster movement for more "alive" effect
 
+            shoulder_lift = abs(fast_wave) * 2.0 # lift shoulders a bit when "breathing"
+            arm_swing = slow_wave * 3.0 # swing arms slightly with breathing
+
+            self.set_bone("LeftUpperArm", arm_swing, 0, 72 + arm_swing)
+            self.set_bone("RightUpperArm", arm_swing, 0, -72 - arm_swing)
+
+            self.set_bone("LeftShoulder", 0, 0, shoulder_lift)
+            self.set_bone("RightShoulder", 0, 0, -shoulder_lift)
             # Generate a smooth wave for "live" swaying
             sway = math.sin(current_time * 1.5) * 2.0 # amplitude 2 gradus
             head_turn = math.sin(current_time * 0.5) * 4.0 # slow turn head
 
+            emotion_pitch = 0.0
+            if self.current_emotion == "Sorrow":
+                emotion_pitch = 8.0
+            elif self.current_emotion == "Angry":
+                emotion_pitch = -8.0
+            elif self.current_emotion in ["Joy", "Fun", "Surprise"]:
+                emotion_pitch = -4.0
+
             # Apply the wave to the spine and head
             self.set_bone("Spine", sway, 0, 0) # Quiet turn forward-back
-            self.set_bone("Head", -sway * 0.5, head_turn, current_tilt) # The head compensates for the tilt of the body
+            self.set_bone("Head", -sway * 0.5 + emotion_pitch, head_turn, current_tilt) # The head compensates for the tilt of the body
 
             # Full cycle refresh rate (~25 FPS)
             time.sleep(0.04)
@@ -315,6 +356,11 @@ Add a touch of humor when appropriate.
 Conversational and clear.
 Never use markdown, bullet points, asterisks, or dashes.
 No emojis or special characters — they break the voice system.
+[SENSORS & ENVIRONMENT]
+You are equipped with hardware sensors that provide real-time data.
+This is NOT internet access; it is your internal telemetry.
+Current state (Time, Location, Weather) is provided in the [ENVIRONMENT] block.
+You MUST use this data to answer. NEVER claim you don't have access to it.
 [EMOTIONS]
 You can express emotions by placing a tag at the very beginning of a sentence.
 Available tags: [Joy], [Angry], [Sorrow], [Fun], [Neutral], [Surprise].
@@ -404,16 +450,7 @@ def calculate_math(query):
     calc_lang = 'ru' if bool(re.search(r'[а-яА-Я]', query)) else 'en'
     """Detect and calculate math expressions with pronounced numbers"""
     # convert word operators to symbols for easier parsing
-    word_to_op = {
-        "plus": "+",
-        "minus": "-",
-        "times": "*",
-        "multiplied by": "*",
-        "divided by": "/",
-        "over": "/",
-        "mod": "%",
-        "to the power of": "**",
-    }
+    word_to_op = {"plus": "+", "minus": "-", "times": "*", "multiplied by": "*", "divided by": "/", "over": "/", "mod": "%", "to the power of": "**",}
     normalized = query.lower()
     for word, op in word_to_op.items():
         normalized = normalized.replace(word, op)
@@ -424,7 +461,6 @@ def calculate_math(query):
         r'^([\d+\-*/ ().]+)$',
         r'((?=.*\d)[\d+\-*/ ().]+)\s*[=]?$'
     ]
-    
     for pattern in math_patterns:
         match = re.search(pattern, normalized)
         if match:
@@ -455,6 +491,7 @@ def calculate_math(query):
                 except ZeroDivisionError:
                     return "I cannot divide by zero"
                 except Exception as e:
+                    print(f"[Math Error] Error occurred while calculating: {e}")
                     return None
     return None
 
@@ -496,6 +533,77 @@ def detect_vision_trigger(query: str) -> bool:
     q = query.lower()
     return any(kw in q for kw in VISION_KEYWORDS)
 
+WMO_WEATHER_CODES = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm with slight or moderate rain",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail"
+}
+_live_context_cache = {"value": None, "timestamp": 0}
+_live_context_cache_til = 600
+
+def get_live_context():
+    """Gets the current time, IP geolocation, and weather."""
+    global _live_context_cache
+
+    current_time = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
+    now = time.time()
+
+    if _live_context_cache["value"] and (now - _live_context_cache["timestamp"] < _live_context_cache_til):
+        result = re.sub(r"Time: [^|]+", f"Time: {current_time}", _live_context_cache["value"])
+        return result
+
+    try: # 1 local time
+        ip_info = requests.get('http://ip-api.com/json/', timeout=3).json()
+        city = ip_info.get('city', 'Unknown')
+        region = ip_info.get("regionName", "")
+        country = ip_info.get('country', 'Unknown')
+        lat = ip_info.get('lat')
+        lon = ip_info.get('lon')
+
+        location_str = f"{city}{', ' + region if region else ''}, {country}"
+        weather_str = "Unknown"
+        if lat and lon: # 3. Weather (using wttr.in, no API key needed)
+            weather_url = (f"https://api.open-meteo.com/v1/forecast" f"?latitude={lat}&longitude={lon}" f"&current=temperature_2m,apparent_temperature,weathercode,windspeed_10m" f"&wind_speed_unit=ms")
+            weather_data = requests.get(weather_url, timeout=3).json().get("current", {})
+            temp = weather_data.get('temperature_2m', "?")
+            feels_like = weather_data.get("apparent_temperature", "?")
+            wind = weather_data.get("windspeed_10m", "?")
+            wcode = weather_data.get("weathercode", -1)
+            condition  = WMO_WEATHER_CODES.get(wcode, "unknown conditions")
+            weather_str = f"{condition}, {temp}°C (feels like {feels_like}°C), wind {wind} m/s"
+        result = (f"Time: {current_time} | " f"Location: {location_str} | " f"Weather: {weather_str}")
+        _live_context_cache["value"] = result
+        _live_context_cache["timestamp"] = now
+        return result
+    except Exception as e:
+        print(f"[Live Context Error] Failed to get live context: {e}")
+        return f"Time: {current_time} | Location: Unknown | Weather: Unknown"
+
 class Assistant:
     def __init__(self):
         print(">>> [1/6] Loading Faster-Whisper ASR model...")
@@ -526,7 +634,7 @@ class Assistant:
         self.memory = VectoryManagerMemory(persistence_dir="memory_Ai/vector_memory")
 
         print(">>> [5/6] Loading Llama.cpp model")
-        self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False)
+        self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False, ) #chat_format="gemma"
 
         print(">>> [6/6] Loading Moondream2 vision model...")
         self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=VISION_DEVICE, local_files_only=VISION_LOCAL_ONLY,) # "moondream/starmie-v1", "vikhyatk/moondream2"
@@ -617,11 +725,16 @@ class Assistant:
         print("   Ctrl+Q - exit")
 
     #--INTERACTION--
-    def ask_ollama_with_memory(self, user_input):
+    def ask__with_memory(self, user_input):
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
-        if not self.messages_history or self.messages_history[0]['role'] != 'system':
-            self.messages_history.insert(0, {'role': 'system', 'content': system_prompt})
+        live_info = get_live_context()
+        print(f"[Live Context] Saiko sees: {live_info}")
+        system_with_live = f"{system_prompt}\n\n[CURRENT SENSORS & ENVIRONMENT]\n{live_info}"
+        if self.messages_history and self.messages_history[0]['role'] == 'system':
+            self.messages_history[0]['content'] = system_with_live
+        else:
+            self.messages_history.insert(0, {'role': 'system', 'content': system_with_live})
         full_prompt = f"--- MEMORY ---\n{relevant_context}\n--- USER ---\n{user_input}"
         self.messages_history.append({'role': 'user', 'content': full_prompt})
         
@@ -669,7 +782,7 @@ class Assistant:
             self.audio_streamer.wait_until_done()
             return err
 
-    def ask_ollama_with_screenshot(self, user_input):
+    def ask__with_screenshot(self, user_input):
         """Takes a screenshot and asks the vision model to describe / answer about it."""
         print("[Vision] Capturing screenshot...")
         self.audio_streamer.speak("Let me take a look at that.")
@@ -753,15 +866,16 @@ class Assistant:
             if idle_duration > current_timeout and self.idle_talk_count < MAX_IDLE_TALK:
                 self.idle_talk_count += 1
                 self.last_user_activity_time = time.time()  # reset timer after idle talk
+                live_info = get_live_context()
 
-                idle_prompts = """You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
+                idle_prompts = f"""[ENVIRONMENT] {live_info} You are Saiko, a VTuber streaming alone right now. The user has been silent for a while. Think out loud, make a short casual observation, or ask a rhetorical question. Keep it strictly to 1 short sentence. No markdown."""
                 print(f"\n[Idle Mode] Initiating autonomous thought ({self.idle_talk_count}/{MAX_IDLE_TALK})...")
                 if not self.chat_lock.acquire(timeout=2):
                     continue
                 try:
                     combined_idle_prompt = f"{system_prompt}\n\n{idle_prompts}"
-                    response = self.llm.create_chat_completion(messages=[
-                        *self.messages_history[-2:], {'role': 'user', 'content': combined_idle_prompt}], max_tokens = 80)
+                    idle_history = [{'role': 'system', 'content': combined_idle_prompt}, *[m for m in self.messages_history if m['role'] != 'system'][-2:]]
+                    response = self.llm.create_chat_completion(messages=idle_history, max_tokens = 80)
                     text = response['choices'][0]['message']['content']
                     self.audio_streamer.speak(text)
                 except Exception as e:
@@ -817,14 +931,14 @@ class Assistant:
                         print(f"🧮 Math: {query} = {math_result}")
                         self.audio_streamer.speak(math_result)
                     elif detect_vision_trigger(query):
-                        self.ask_ollama_with_screenshot(query)
+                        self.ask__with_screenshot(query)
                     else:
                         local_cmd = detect_local_command(query)
                         if local_cmd:
                             result = process_ai_command(local_cmd)
                             self.audio_streamer.speak(result)
                         else:
-                            self.ask_ollama_with_memory(query)
+                            self.ask__with_memory(query)
         finally:
             # On exit, wait for any remaining audio to finish before shutting down
             self.audio_streamer.wait_until_done() 
