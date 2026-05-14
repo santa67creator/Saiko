@@ -47,6 +47,14 @@ VAD_MIN_SPEECH_SECS = 0.3 # minimum length of speech to consider valid
 IDLE_TIMEOUT = 50  # seconds before considering idle
 MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
 
+def needs_context_trigger(text):
+    keywords = [
+        "время", "час", "погода", "градус", "температура", "улиц", "локация", "где я",
+        "time", "weather", "outside", "temperature", "location", "where am i", "clock"
+    ]
+    return any(word in text.lower() for word in keywords)
+
+
 # --- AUDIO STREAMING CLASS ---
 class AudioStreamer:
     def __init__(self, sample_rate, tts_model, tts_model_ru):
@@ -730,11 +738,13 @@ class Assistant:
         print("   Ctrl+Q - exit")
 
     #--INTERACTION--
-    def ask__with_memory(self, user_input):
+    def ask__with_memory(self, user_input, force_context=False):
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
-        live_info = get_live_context()
-        print(f"[Live Context] Saiko sees: {live_info}")
+        if force_context or needs_context_trigger(user_input):
+            live_info = get_live_context()
+            print(f"[Live Context] Saiko sees: {live_info}")
+        else:            live_info = "No live context needed."
         system_with_live = f"{system_prompt}\n\n[CURRENT SENSORS & ENVIRONMENT]\n{live_info}"
         if self.messages_history and self.messages_history[0]['role'] == 'system':
             self.messages_history[0]['content'] = system_with_live
