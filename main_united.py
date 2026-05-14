@@ -135,6 +135,8 @@ class AudioStreamer:
 
     def speak(self, text, emotion=None):
         if not text: return
+        lang = 'ru' if bool(re.search(r'[а-яА-Я]', text)) else 'en'
+        text = pronounce_number_in_text(text, lang=lang)
         text = strip_unsupported_chars(text)
         if not text: return
 
@@ -361,6 +363,9 @@ You are equipped with hardware sensors that provide real-time data.
 This is NOT internet access; it is your internal telemetry.
 Current state (Time, Location, Weather) is provided in the [ENVIRONMENT] block.
 You MUST use this data to answer. NEVER claim you don't have access to it.
+[BEHAVIORAL RULES]
+1. Weather: If asked about the weather, always share your personal opinion on whether the user should go outside based on the current conditions.
+2. Time: Check the Time in the [ENVIRONMENT] block. If it is late at night (past 23:00 / 11 PM), act caring and ask the user why they are still awake.
 [EMOTIONS]
 You can express emotions by placing a tag at the very beginning of a sentence.
 Available tags: [Joy], [Angry], [Sorrow], [Fun], [Neutral], [Surprise].
@@ -595,7 +600,7 @@ def get_live_context():
             wind = weather_data.get("windspeed_10m", "?")
             wcode = weather_data.get("weathercode", -1)
             condition  = WMO_WEATHER_CODES.get(wcode, "unknown conditions")
-            weather_str = f"{condition}, {temp}°C (feels like {feels_like}°C), wind {wind} m/s"
+            weather_str = f"{condition}, {temp} degrees (feels like {feels_like} degrees), wind {wind} meters per second"
         result = (f"Time: {current_time} | " f"Location: {location_str} | " f"Weather: {weather_str}")
         _live_context_cache["value"] = result
         _live_context_cache["timestamp"] = now
