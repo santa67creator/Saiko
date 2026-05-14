@@ -460,8 +460,8 @@ def pronounce_number_in_text(text, lang='en'):
     return re.sub(r'-?\d+\.?\d*', replace_number, text)
 
 def calculate_math(query):
-    calc_lang = 'ru' if bool(re.search(r'[а-яА-Я]', query)) else 'en'
     """Detect and calculate math expressions with pronounced numbers"""
+    calc_lang = 'ru' if bool(re.search(r'[а-яА-Я]', query)) else 'en'
     # convert word operators to symbols for easier parsing
     word_to_op = {"plus": "+", "minus": "-", "times": "*", "multiplied by": "*", "divided by": "/", "over": "/", "mod": "%", "to the power of": "**",}
     normalized = query.lower()
@@ -737,14 +737,45 @@ class Assistant:
         keyboard.add_hotkey('ctrl+q', lambda: self.toggle_exit())
         print("   Ctrl+Q - exit")
 
+    def _stream_and_speak(self, response, interrupt_msg="[!] Response interrupted by user.") -> str:
+        """Reads the streaming response from the LLM, parses emotions, and voices suggestions as they come in. Returns the full text of the response."""
+        EMOTION_PATTERN = r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]'
+        ai_answer = ""
+        buf = ""
+        for chunk in response:
+            if self.interruption_flag.is_set():
+                print(f"\n{interrupt_msg}")
+                break
+            token = chunk['choices'][0]['delta'].get('content', '')
+            if token:
+                ai_answer += token
+                buf += token
+                sentences, buf = flush_sentences(buf)
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if not sentence: 
+                        continue
+                    emotion_match = re.search(EMOTION_PATTERN, sentence, re.IGNORECASE)
+                    current_emotion = None
+                    if emotion_match:
+                        current_emotion = emotion_match.group(1).capitalize()
+                        self.saiko_body.set_emotion(current_emotion)
+                        sentence = re.sub(EMOTION_PATTERN, '', sentence, count=1, flags=re.IGNORECASE).strip()
+                    if sentence:
+                        self.audio_streamer.speak(sentence, emotion=current_emotion)
+        if not self.interruption_flag.is_set() and buf.strip():
+            self.audio_streamer.speak(buf.strip())
+        return ai_answer
+
     #--INTERACTION--
-    def ask__with_memory(self, user_input, force_context=False):
+    def ask_with_memory(self, user_input, force_context=False):
     # get context from the instance we created earlier
         relevant_context = self.memory.get_relevant_context(user_input, top_k=5)
         if force_context or needs_context_trigger(user_input):
             live_info = get_live_context()
             print(f"[Live Context] Saiko sees: {live_info}")
-        else:            live_info = "No live context needed."
+        else: 
+            live_info = "No live context needed."
         system_with_live = f"{system_prompt}\n\n[CURRENT SENSORS & ENVIRONMENT]\n{live_info}"
         if self.messages_history and self.messages_history[0]['role'] == 'system':
             self.messages_history[0]['content'] = system_with_live
@@ -759,34 +790,7 @@ class Assistant:
             with self.chat_lock: # ensure only one chat at a time to prevent overlapping responses
                 self.interruption_flag.clear() # clear interruption flag before starting new response
                 response = self.llm.create_chat_completion(messages=self.messages_history, max_tokens=LLM_MAX_TOKENS, stream=True)
-                ai_answer = "" # we will build the answer as it streams in
-                buf = "" # buffer for incomplete sentences
-
-                for chunk in response:
-                    if self.interruption_flag.is_set():
-                        print("\n[!] Response interrupted by user.")
-                        break
-
-                    token = chunk['choices'][0]['delta'].get('content', '')
-                    if token:
-                        ai_answer += token
-                        buf += token
-                        #print(token, end='', flush=True)
-                        sentences, buf = flush_sentences(buf)
-                        for sentence in sentences:
-                            sentence = sentence.strip()
-                            if sentence:
-                                emotion_match = re.search(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
-                                current_emotion = None
-                                if emotion_match:
-                                    current_emotion = emotion_match.group(1).capitalize()
-                                    self.saiko_body.set_emotion(current_emotion)
-                                    sentence = re.sub(r'\[(Joy|Angry|Sorrow|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
-                                if sentence:
-                                    self.audio_streamer.speak(sentence, emotion=current_emotion)
-                                    #print() # for newline after response is done
-            if not self.interruption_flag.is_set() and buf.strip():
-                self.audio_streamer.speak(buf.strip())
+                ai_answer = self._stream_and_speak(response)
             self.memory.add_memory_interaction(user_input, ai_answer)
             self.messages_history.append({'role': 'assistant', 'content': ai_answer})
             return ai_answer
@@ -797,7 +801,7 @@ class Assistant:
             self.audio_streamer.wait_until_done()
             return err
 
-    def ask__with_screenshot(self, user_input):
+    def ask_with_screenshot(self, user_input):
         """Takes a screenshot and asks the vision model to describe / answer about it."""
         print("[Vision] Capturing screenshot...")
         self.audio_streamer.speak("Let me take a look at that.")
@@ -832,36 +836,11 @@ class Assistant:
                          f"Start with one emotion tag: [Joy], [Sorrow], [Angry], [Fun], [Neutral], or [Surprise].")
                 combined_vision_prompt = f"{system_prompt}\n\n{vision_prompt}"
                 response = self.llm.create_chat_completion(messages=[{'role': 'user', 'content': combined_vision_prompt}], max_tokens=LLM_MAX_TOKENS, stream=True)
-                ai_answer = ""
-                buf = ""
-                for chunk in response:
-                    if self.interruption_flag.is_set():
-                        print("\n[!] Vision response interrupted by user.")
-                        break
-
-                    token = chunk['choices'][0]['delta'].get('content', '')
-                    if token:
-                        ai_answer += token
-                        buf += token
-                        sentences, buf = flush_sentences(buf)
-                        for sentence in sentences:
-                            sentence = sentence.strip()
-                            if sentence:
-                                emotion_match = re.search(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', sentence, re.IGNORECASE)
-                                current_emotion = None
-                                if emotion_match:
-                                    current_emotion = emotion_match.group(1).capitalize()
-                                    self.saiko_body.set_emotion(current_emotion)
-                                    sentence = re.sub(r'\[(Joy|Sorrow|Angry|Fun|Neutral|Surprise)\]', '', sentence, count=1, flags=re.IGNORECASE).strip()
-                                if sentence:
-                                    self.audio_streamer.speak(sentence, emotion=current_emotion)
-            if not self.interruption_flag.is_set() and buf.strip():
-                self.audio_streamer.speak(buf.strip())
-            # Store vision interaction in history as plain text
+                ai_answer = self._stream_and_speak(response, interrupt_msg="[Vision] Response interrupted by user.")
 
             self.messages_history.append({'role': 'user', 'content': f"[Vision Input] {user_input}"})
             self.messages_history.append({'role': 'assistant', 'content': f"[Vision Response] {ai_answer}"})
-            if len (self.messages_history) > 11:
+            if len (self.messages_history) > 12:
                 self.messages_history = [self.messages_history[0]] + self.messages_history[-10:]
             return ai_answer
         except Exception as e:
@@ -946,14 +925,14 @@ class Assistant:
                         print(f"🧮 Math: {query} = {math_result}")
                         self.audio_streamer.speak(math_result)
                     elif detect_vision_trigger(query):
-                        self.ask__with_screenshot(query)
+                        self.ask_with_screenshot(query)
                     else:
                         local_cmd = detect_local_command(query)
                         if local_cmd:
                             result = process_ai_command(local_cmd)
                             self.audio_streamer.speak(result)
                         else:
-                            self.ask__with_memory(query)
+                            self.ask_with_memory(query)
         finally:
             # On exit, wait for any remaining audio to finish before shutting down
             self.audio_streamer.wait_until_done() 
