@@ -1,95 +1,168 @@
-ALL CHANGES YOU CAN SEE IN COMMIT, AND ALL DESCRIBE ABOUT CHANGES YOU ALSO SEE IN COMMIT
+> **📌 Note:** This version of `main_united_ollama.py` can be found in commit **`89ea9b7`** dated **Apr 24, 2026**.
+> To find it: go to the **Commits** tab of the repository and look for the commit from **April 24, 2026** with hash `89ea9b7`.
+
+---
 
 # Saiko - Autonomous Local AI Assistant
 
-Saiko is a fully offline, real-time voice and text AI assistant designed to run locally on your computer. It features continuous voice activity detection (VAD), text-to-speech (TTS), long-term vector memory, and basic PC control capabilities.
+Saiko is a fully offline, real-time voice and text AI assistant designed to run locally on your computer. It features continuous voice activity detection (VAD), text-to-speech (TTS), long-term vector memory, VTuber avatar control via VMC protocol, and screen vision capabilities.
 
 All processing is done locally, meaning **no internet connection is required** after the initial setup.
 
 ## ✨ Features
 
-* 100% Local & Private: Powered by [Ollama](https://ollama.com/) (default: Gemma) for text generation, meaning your data never leaves your PC.
-* Real-time Voice Interaction: Uses Faster-Whisper for fast speech-to-text (STT) and Silero for human-like text-to-speech (TTS).
-* Interruptible Speech: You can interrupt the assistant while it's speaking, making conversations feel natural.
-* Vector Memory: Remembers past interactions using ChromaDB, allowing for context-aware conversations.
-* Autonomous Idle Mode: If you are silent for too long, Saiko will initiate "idle talk" (like a VTuber thinking out loud) to keep the interaction alive.
-* PC Control & Tools: Can open the browser, launch notepad, and control system volume.
-* Native Math Engine: Calculates math expressions directly without sending them to the LLM for faster and more accurate responses. 
+* **100% Local & Private:** Powered by [Ollama](https://ollama.com/) (default: `gemma3:4b`) for text generation — your data never leaves your PC.
+* **Real-time Voice Interaction:** Uses Faster-Whisper for fast speech-to-text (STT) and Silero for human-like text-to-speech (TTS).
+* **Interruptible Speech:** You can interrupt the assistant while it's speaking, making conversations feel natural.
+* **Vector Memory:** Remembers past interactions using ChromaDB, allowing for context-aware conversations.
+* **Autonomous Idle Mode:** If you are silent for too long, Saiko will initiate "idle talk" (like a VTuber thinking out loud).
+* **PC Control & Tools:** Can open the browser, launch notepad, and control system volume.
+* **Native Math Engine:** Calculates math expressions (including spoken forms like "two plus two") directly without sending them to the LLM for faster and more accurate responses.
+* **🆕 Screen Vision:** Can capture your screen and answer questions about what's on it. Triggered by phrases like *"look at this"* or *"what's on my screen"*.
+* **🆕 VTuber Avatar (VMC Body):** Full live avatar control via the VMC protocol — lip sync, blinking, head tilt, body sway, and facial emotion expressions driven by the AI's responses.
+* **🆕 On-the-fly Mode Switching:** Switch between voice and keyboard input mid-conversation by saying *"switch mode"*, *"voice"*, or *"keyboard"*.
 
 ## 📂 Project Structure
 
-The repository is organized to separate the core logic from memory management and utility tools:
-
-* `main_united.py`: The core application. Contains the logic for audio streaming, LLM routing, VAD, and OS commands.
-* `memory_Ai/`: Contains the ChromaDB vector database (`vector_memory/`) and `memory_manager.py` which handles saving and retrieving contextual dialogue.
-* `help_tools/`: A suite of utilities to manage the assistant's brain:
-  * `edit_memory_beta.py`: Console menu to search, delete, or manually inject facts into the vector memory.
-  * `view_memory_beta.py`: Displays all raw records currently stored in the database.
-  * `transcribe_reference.py`: A utility to batch transcribe `.wav` files using Faster-Whisper.
+```text
+main_united_ollama.py       Main application (this version)
+memory_Ai/
+  memory_manager.py         Vector memory logic
+  vector_memory/            Persistent memory database
+help_tools/
+  edit_memory_beta.py       Memory editor
+  view_memory_beta.py       Memory viewer
+  transcribe_reference.py   Batch WAV transcription utility
+README_OLLAMA1.md
+requirements.txt
+```
 
 ## 🛠️ Installation & Setup
 
 ### 1. Prerequisites
 * Python 3.10+
-* Ollama: Download and install from [ollama.com](https://ollama.com/).
-* NVIDIA GPU (Recommended): The code is optimized for CUDA (`device="cuda"`).
+* [Ollama](https://ollama.com/) — download and install.
+* NVIDIA GPU (Recommended): The code defaults to CUDA for Whisper and Silero. CPU mode is supported but slower.
+* VTuber software supporting the VMC protocol (e.g., VSeeFace, 3tene) — optional, only required for the avatar body feature.
 
 ### 2. Install Dependencies
-Clone the repository, create a virtual environment, and install the required packages.
 
 ```bash
 pip install -r requirements.txt
-
-Important Note for GPU Users: To utilize your NVIDIA GPU, you must install the CUDA-enabled version of PyTorch. Visit the PyTorch website to get the correct installation command for your system before running the script.
 ```
+
+> **Important for GPU users:** Install the CUDA-enabled version of PyTorch from [pytorch.org](https://pytorch.org) before running the script.
+
 ### 3. Pull the Language Model
-By default, Saiko uses the gemma model. You need to pull it via Ollama:
-```
-ollama run gemma
-```
-🚀 Usage
-Run the main script:
-```
-python main_united.py
-```
-* First Launch: There will be a long loading time and delay when you first launch it. The script needs to download the Faster-Whisper and Silero models to your local cache.
 
-* Input Mode: Upon startup, you can choose between Voice (microphone) or Keyboard input.
+This version uses `gemma3:4b` by default:
 
-* Math Queries: When asking math problems, simply type/say the equation (e.g., 2 + 2). WARNING: Do not use "?" for math queries (e.g., do not use 2 + 2?), as it breaks the regex parser.
+```bash
+ollama run gemma3:4b
+```
 
-* Exit: Press Ctrl+Q or say/type "stop" or "bye" to shut down the assistant safely and close audio streams.
+## 🚀 Usage
 
-## ⚙️ Customization (Where to change things)
-### All main configurations are located at the top of main_united.py. You can easily tweak the assistant to your liking:
+```bash
+python main_united_ollama.py
+```
+
+* **First Launch:** Expect a longer load time — Faster-Whisper and Silero models will be downloaded to your local cache.
+* **Input Mode:** Upon startup, choose between Voice (microphone) or Keyboard input.
+* **Switch Mode:** Say or type *"switch mode"*, *"voice"*, or *"keyboard"* at any time to toggle input method without restarting.
+* **Math Queries:** Say or type an equation (e.g., `2 + 2` or `what is 10 divided by 3`). You can also use spoken operators: *"plus", "minus", "times", "divided by", "to the power of"*. ⚠️ Do **not** add `?` at the end of pure math expressions — it breaks the regex parser.
+* **Vision:** Say phrases like *"look at this"*, *"what's on my screen"*, or *"describe my screen"* to trigger a screenshot analysis.
+* **Exit:** Press `Ctrl+Q` or say/type `"stop"` or `"bye"` to shut down safely.
+
+## ⚙️ Customization
+
+All main configurations are at the top of `main_united_ollama.py`.
 
 ### AI Models & Voice
 
-* Change the LLM: ``` Change OLLAMA_MODEL = "gemma" to any model you have pulled (e.g., llama3, mistral). ```
-
-* Change the Voice: ``` Change SPEAKER = "en_0" to another Silero voice profile. ```
-Note: If you want to change the language, you must update the TTS model language parameters and the prompt.
-
-* Hardware Execution: If you don't have an NVIDIA GPU,
+```python
+OLLAMA_MODEL = "gemma3:4b"   # Change to any model you have pulled (e.g., "llama3", "mistral")
+SPEAKER = "en_0"             # Silero voice profile
 ```
-change SILERO_DEVICE = "cuda" to "cpu", and update the Whisper setup to device="cpu", compute_type="int8".
+
+> Note: To change the language, update the TTS model's `language` parameter and adjust the system prompt.
+
+### Hardware Execution
+
+For CPU-only mode (no NVIDIA GPU):
+
+```python
+SILERO_DEVICE = "cpu"
+# Also update the Whisper setup:
+self.model_asr = WhisperModel("base.en", device="cpu", compute_type="int8")
 ```
 
 ### Personality
-Modify the `system_prompt` variable in `main_united.py` to change Saiko's identity, tone, and behavior rules.
 
-## Microphone & Silence Sensitivity
-Adjust the VAD (Voice Activity Detection) settings in `main_united.py`:
+Modify the `system_prompt` variable to change Saiko's identity, tone, and behaviour rules.
 
-`VAD_CONFIDENCE_THRESHOLD = 0.5` (Increase if it picks up too much background noise).
+The emotion system is built into the prompt. The AI can use these tags at the start of a sentence to drive avatar facial expressions:
 
-`VAD_SILENCE_SECS = 2.0` (How long you need to pause before it considers you finished speaking).
+`[Joy]` `[Angry]` `[Sorrow]` `[Fun]` `[Neutral]` `[Surprise]`
 
-### Idle Mode Behavior
-`IDLE_TIMEOUT = 50:` Seconds of silence before Saiko speaks on her own.
+### Microphone & Silence Sensitivity
 
-`MAX_IDLE_TALK = 5:` Maximum consecutive autonomous messages before she waits for your input.
+```python
+VAD_CONFIDENCE_THRESHOLD = 0.5   # Increase to reduce background noise pickup
+VAD_SILENCE_SECS = 2.0           # Pause length (seconds) before speech is considered finished
+VAD_MAX_SECS = 10.0              # Maximum recording length per utterance
+VAD_MIN_SPEECH_SECS = 0.3        # Minimum speech duration to be considered valid
+```
 
-# so this is file will "readme" can be changed then time
+### Idle Mode Behaviour
 
-# if you know how change code better, you can write in comments or fork idk
+```python
+IDLE_TIMEOUT = 50    # Seconds of silence before Saiko speaks on her own
+MAX_IDLE_TALK = 5    # Maximum consecutive autonomous messages before she waits for user input
+```
+
+The idle timeout increases with each autonomous message to avoid spam: each successive idle message adds 20 seconds to the base timeout, plus a random jitter of 5–15 seconds.
+
+### VMC Avatar Body (VTuber Integration)
+
+The `SaikoBody` class connects to VTuber software via the VMC protocol over UDP (default: `127.0.0.1:39539`). It controls:
+
+* **Lip sync** — pseudo-random mouth movement while audio is playing
+* **Blinking** — random blink every 2–6 seconds
+* **Head tilt** — smooth random head tilt with easing
+* **Body sway** — sinusoidal spine and head movement (~25 FPS)
+* **Facial emotions** — driven by `[EmotionTag]` in the AI's responses; auto-resets to Neutral after 6–12 seconds
+
+To change the VMC target port or IP, edit the `SaikoBody` instantiation in the `Assistant.__init__` method.
+
+## 💻 Hardware Recommendations
+
+**Minimum:**
+- Modern CPU
+- 16 GB RAM
+
+**Recommended:**
+- NVIDIA GPU with 8 GB+ VRAM
+- 32 GB RAM
+
+> Built and tested on a GTX 1650.
+
+---
+
+## License
+
+This project is open-source and free to use for personal and educational purposes.
+
+Commercial use or corporate deployment is strictly prohibited without prior permission. For commercial inquiries, licensing, or access requests, please contact me on Twitter.
+
+---
+
+## Author
+
+Created by **Santa67creator** (San San / Sanzhar Syarov)
+
+Saiko is an experimental autonomous AI companion designed to feel alive, expressive, and fully local.
+
+---
+
+*If you know how to improve the code, feel free to open a PR or leave a comment.*
