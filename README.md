@@ -238,6 +238,6 @@ Commercial use or corporate deployment is strictly prohibited without prior perm
 
 ## Author
 
-Created by San San. 
+Created by Santa67creator (San San) (Sanzhar Syarov)
 
 Saiko is an experimental autonomous AI companion designed to feel alive, expressive, and fully local.
