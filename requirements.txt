@@ -1,7 +1,7 @@
+ollama
 torch
 torchaudio
 sounddevice
-ollama
 PyAutoGUI
 keyboard
 numpy
@@ -10,3 +10,9 @@ faster-whisper
 chromadb
 soundfile
 omegaconf
+requests
+mss
+Pillow
+llama-cpp-python
+python-osc
+transformers
