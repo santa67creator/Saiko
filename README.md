@@ -76,11 +76,12 @@ requirements.txt
 pip install -r requirements.txt
 ```
 
-# For NVIDIA GPU acceleration (strongly recommended):
-# Install CUDA-enabled PyTorch first (see pytorch.org)
-# Then install llama-cpp-python with CUDA support:
+### For NVIDIA GPU acceleration (strongly recommended):
+### Install CUDA-enabled PyTorch first (see pytorch.org)
+### Then install llama-cpp-python with CUDA support:
 
 set CMAKE_ARGS="-DLLAMA_CUDA=on"
+
 pip install -r requirements.txt --force-reinstall --no-cache-dir
 
 ### 3. Download a GGUF Model
@@ -119,6 +120,7 @@ Exit with:
 
 
 VTuber Integration
+
 Saiko sends animation data via the VMC Protocol on port 39539. To see the avatar move, make sure you have a compatible software (like VSeeFace or VNyan) running and configured to listen to VMC data on 127.0.0.1:39539
 ---
 
