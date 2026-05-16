@@ -76,6 +76,13 @@ requirements.txt
 pip install -r requirements.txt
 ```
 
+# For NVIDIA GPU acceleration (strongly recommended):
+# Install CUDA-enabled PyTorch first (see pytorch.org)
+# Then install llama-cpp-python with CUDA support:
+
+set CMAKE_ARGS="-DLLAMA_CUDA=on"
+pip install -r requirements.txt --force-reinstall --no-cache-dir
+
 ### 3. Download a GGUF Model
 
 Place your model in the `models/` folder. (you need create folder myself)
@@ -110,6 +117,9 @@ Exit with:
 - "stop"
 - "bye"
 
+
+VTuber Integration
+Saiko sends animation data via the VMC Protocol on port 39539. To see the avatar move, make sure you have a compatible software (like VSeeFace or VNyan) running and configured to listen to VMC data on 127.0.0.1:39539
 ---
 
 ## Voice Commands
@@ -213,7 +223,9 @@ Recommended:
 
 ## License
 
-Use and modify freely for personal and educational projects. If you company you can't use this project and code also, write me about access, in twitter
+This project is open-source and free to use for personal and educational purposes
+
+Commercial use or corporate deployment is strictly prohibited without prior permission. For commercial inquiries, licensing, or access requests, please contact me on Twitter
 
 ---
 
