@@ -64,51 +64,115 @@ requirements.txt
 
 ## Installation
 
-copy github
-```
+```bash
 git clone https://github.com/santa67creator/cool-yea-jarvis.git
 ```
 
-Activate env (or make own env)
+Activate env (or create your own):
+```bash
+# Windows
+./venv4/Scripts/Activate
+
+# Linux / macOS
+source venv4/bin/activate
 ```
-./venv4/Scripts/Activate (for windows)
-```
-### 1. Requirements
+
+---
+
+### Step 1 — Requirements
 
 - Python 3.10 or newer
-- NVIDIA GPU recommended
-- CUDA-enabled PyTorch for best performance
+- NVIDIA GPU recommended (tested on GTX 1650)
+- CUDA Toolkit installed on your system
 
-### 2. Install Dependencies
+---
+
+### Step 2 — Install CUDA Toolkit (NVIDIA only)
+
+Download and install the CUDA Toolkit for your OS from the official page:
+
+> https://developer.nvidia.com/cuda-downloads
+
+After installation, verify it works:
+```bash
+nvcc --version
+```
+
+Make sure the version matches what you'll use for PyTorch (e.g. CUDA 11.8 or 12.1).
+
+---
+
+### Step 3 — Install PyTorch with CUDA support
+
+Go to the official PyTorch install page and generate the exact command for your system:
+
+> https://pytorch.org/get-started/locally/
+
+Select: `Stable` → `Pip` → `Python` → your CUDA version.
+
+
+
+---
+
+### Step 4 — Install llama-cpp-python with CUDA support
+
+`llama-cpp-python` must be compiled with CUDA flags. Install it **before** running `requirements.txt`.
+
+**Windows:**
+```bash
+set CMAKE_ARGS="-DGGML_CUDA=on"
+set FORCE_CMAKE=1
+pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+**Linux / macOS:**
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+> Full documentation and troubleshooting for llama-cpp-python:
+> https://github.com/abetlen/llama-cpp-python#installation-with-hardware-acceleration
+
+Verify the install:
+```bash
+python -c "from llama_cpp import Llama; print('llama-cpp-python OK')"
+```
+
+---
+
+### Step 5 — Install remaining dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### For NVIDIA GPU acceleration (strongly recommended):
-### Install CUDA-enabled PyTorch first (see pytorch.org)
-### Then install llama-cpp-python with CUDA support:
+---
+
+### Step 6 — Download a GGUF Model
+
+Create the `models/` folder and place your model inside:
+
+```bash
+mkdir models
 ```
-set CMAKE_ARGS="-DLLAMA_CUDA=on"
 
-pip install -r requirements.txt --force-reinstall --no-cache-dir
-```
-### 3. Download a GGUF Model
-
-Place your model in the `models/` folder. (you need create folder myself)
-
-Default model:
-
+Default model path:
 ```text
 models/google_gemma-3-4b-it-Q5_K_M.gguf
 ```
 
-### 4. First Launch
+---
 
-The first launch will download:
+### Step 7 — First Launch
+
+The first launch will automatically download:
 - Faster-Whisper models
-- Silero models
+- Silero VAD / TTS models
 - Moondream 2 weights
+
+```bash
+python main_united.py
+```
 
 ---
 
@@ -127,12 +191,13 @@ Exit with:
 - "stop"
 - "bye"
 
+---
 
-VTuber Integration
+## VTuber Integration
 
-Saiko sends animation data via the VMC Protocol on port 39539. 
+Saiko sends animation data via the VMC Protocol on port `39539`.
 
-To see the avatar move, make sure you have a compatible software (like VSeeFace or VNyan) running and configured to listen to VMC data on 127.0.0.1:39539
+To see the avatar move, run a compatible app (e.g. VSeeFace or VNyan) configured to receive VMC data on `127.0.0.1:39539`.
 
 ---
 
@@ -157,17 +222,20 @@ To see the avatar move, make sure you have a compatible software (like VSeeFace 
 
 ## Configuration
 
-All settings are located at the top of `main_united.py`.
+All settings are at the top of `main_united.py`.
 
 ### LLM
 
 ```python
 LLM_MODEL_PATH = "models/google_gemma-3-4b-it-Q5_K_M.gguf"
-LLM_N_GPU_LAYERS = 0
+LLM_N_GPU_LAYERS = 0       # Set higher (e.g. 20–35) to offload layers to GPU
 LLM_N_THREADS = 4
 LLM_N_CTX = 4096
 LLM_MAX_TOKENS = 512
 ```
+
+> Tip: increase `LLM_N_GPU_LAYERS` to speed up inference on NVIDIA GPUs.
+> Start with `20` and increase until you hit VRAM limits.
 
 ### Vision
 
@@ -214,14 +282,14 @@ Edit the `system_prompt` variable in `main_united.py` to change:
 ## Hardware Recommendations
 
 Minimum:
-- 16 GB RAM (4GB)
+- 16 GB RAM
 - Modern CPU
 
 Recommended:
 - NVIDIA GPU with 8 GB+ VRAM
 - 32 GB RAM
 
-i make on gtx 1650
+Tested on GTX 1650.
 
 ---
 
@@ -239,9 +307,10 @@ i make on gtx 1650
 
 ## License
 
-This project is open-source and free to use for personal and educational purposes
+This project is open-source and free to use for personal and educational purposes.
 
-Commercial use or corporate deployment is strictly prohibited without prior permission. For commercial inquiries, licensing, or access requests, please contact me on Twitter
+Commercial use or corporate deployment is strictly prohibited without prior permission.
+For commercial inquiries, licensing, or access requests, please contact me on Twitter.
 
 ---
 

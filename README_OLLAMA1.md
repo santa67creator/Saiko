@@ -9,6 +9,8 @@ Saiko is a fully offline, real-time voice and text AI assistant designed to run 
 
 All processing is done locally, meaning **no internet connection is required** after the initial setup.
 
+---
+
 ## ✨ Features
 
 * **100% Local & Private:** Powered by [Ollama](https://ollama.com/) (default: `gemma3:4b`) for text generation — your data never leaves your PC.
@@ -21,6 +23,8 @@ All processing is done locally, meaning **no internet connection is required** a
 * **🆕 Screen Vision:** Can capture your screen and answer questions about what's on it. Triggered by phrases like *"look at this"* or *"what's on my screen"*.
 * **🆕 VTuber Avatar (VMC Body):** Full live avatar control via the VMC protocol — lip sync, blinking, head tilt, body sway, and facial emotion expressions driven by the AI's responses.
 * **🆕 On-the-fly Mode Switching:** Switch between voice and keyboard input mid-conversation by saying *"switch mode"*, *"voice"*, or *"keyboard"*.
+
+---
 
 ## 📂 Project Structure
 
@@ -37,42 +41,96 @@ README_OLLAMA1.md
 requirements.txt
 ```
 
+---
+
 ## 🛠️ Installation & Setup
 
-### 1. Prerequisites
-* Python 3.10+
-* [Ollama](https://ollama.com/) — download and install.
-* NVIDIA GPU (Recommended): The code defaults to CUDA for Whisper and Silero. CPU mode is supported but slower.
-* VTuber software supporting the VMC protocol (e.g., VSeeFace, 3tene) — optional, only required for the avatar body feature.
+### Step 1 — Clone the Repository
 
-### 2. Install Dependencies
+```bash
+git clone https://github.com/santa67creator/cool-yea-jarvis.git
+cd cool-yea-jarvis
+```
+
+---
+
+### Step 2 — Install CUDA Toolkit *(NVIDIA GPU users only)*
+
+Download and install the CUDA Toolkit for your OS:
+
+> https://developer.nvidia.com/cuda-downloads
+
+After installation, verify with:
+```bash
+nvcc --version
+```
+
+---
+
+### Step 3 — Install PyTorch with CUDA support *(NVIDIA GPU users only)*
+
+Go to the official PyTorch install page and generate the command for your system and CUDA version:
+
+> https://pytorch.org/get-started/locally/
+
+Install PyTorch **before** running `requirements.txt`.
+
+For CPU-only mode, skip this step — standard PyTorch will be installed automatically with the rest of the dependencies.
+
+---
+
+### Step 4 — Install Ollama
+
+Download and install Ollama from the official website:
+
+> https://ollama.com/
+
+After installation, make sure the Ollama service is running in the background before launching Saiko. On Windows and macOS it starts automatically after install. On Linux, run:
+
+```bash
+ollama serve
+```
+
+Then pull the default language model:
+
+```bash
+ollama pull gemma3:4b
+```
+
+> ⚠️ Use `ollama pull`, not `ollama run` — `run` opens an interactive chat session instead of just downloading.
+
+You can use any other model supported by Ollama. See the full list at https://ollama.com/library
+
+---
+
+### Step 5 — Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> **Important for GPU users:** Install the CUDA-enabled version of PyTorch from [pytorch.org](https://pytorch.org) before running the script.
+---
 
-### 3. Pull the Language Model
-
-This version uses `gemma3:4b` by default:
-
-```bash
-ollama run gemma3:4b
-```
-
-## 🚀 Usage
+### Step 6 — Run
 
 ```bash
 python main_united_ollama.py
 ```
 
 * **First Launch:** Expect a longer load time — Faster-Whisper and Silero models will be downloaded to your local cache.
+* Make sure Ollama is running in the background before starting the script.
+
+---
+
+## 🚀 Usage
+
 * **Input Mode:** Upon startup, choose between Voice (microphone) or Keyboard input.
 * **Switch Mode:** Say or type *"switch mode"*, *"voice"*, or *"keyboard"* at any time to toggle input method without restarting.
 * **Math Queries:** Say or type an equation (e.g., `2 + 2` or `what is 10 divided by 3`). You can also use spoken operators: *"plus", "minus", "times", "divided by", "to the power of"*. ⚠️ Do **not** add `?` at the end of pure math expressions — it breaks the regex parser.
 * **Vision:** Say phrases like *"look at this"*, *"what's on my screen"*, or *"describe my screen"* to trigger a screenshot analysis.
 * **Exit:** Press `Ctrl+Q` or say/type `"stop"` or `"bye"` to shut down safely.
+
+---
 
 ## ⚙️ Customization
 
@@ -134,6 +192,8 @@ The `SaikoBody` class connects to VTuber software via the VMC protocol over UDP 
 * **Facial emotions** — driven by `[EmotionTag]` in the AI's responses; auto-resets to Neutral after 6–12 seconds
 
 To change the VMC target port or IP, edit the `SaikoBody` instantiation in the `Assistant.__init__` method.
+
+---
 
 ## 💻 Hardware Recommendations
 
