@@ -64,6 +64,15 @@ requirements.txt
 
 ## Installation
 
+copy github
+```
+git clone https://github.com/santa67creator/cool-yea-jarvis.git
+```
+
+Activate env (or make own env)
+```
+./venv4/Scripts/Activate (for windows)
+```
 ### 1. Requirements
 
 - Python 3.10 or newer
