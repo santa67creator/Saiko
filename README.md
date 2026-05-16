@@ -1,95 +1,224 @@
-ALL CHANGES YOU CAN SEE IN COMMIT, AND ALL DESCRIBE ABOUT CHANGES YOU ALSO SEE IN COMMIT
-
 # Saiko - Autonomous Local AI Assistant
 
-Saiko is a fully offline, real-time voice and text AI assistant designed to run locally on your computer. It features continuous voice activity detection (VAD), text-to-speech (TTS), long-term vector memory, and basic PC control capabilities.
+Saiko is a fully local, real-time AI assistant with voice interaction, screen understanding, long-term memory, and VTuber avatar control.
 
-All processing is done locally, meaning **no internet connection is required** after the initial setup.
+All core AI processing runs on your own computer:
+- Speech recognition with Faster-Whisper
+- Language generation with llama.cpp + Google Gemma 3 GGUF
+- Text-to-speech with Silero TTS
+- Vision with Moondream 2
+- Long-term vector memory
+- Real-time VTuber animation through VMC Protocol
 
-## ✨ Features
+After the initial model download, the assistant can work offline.
 
-* 100% Local & Private: Powered by [Ollama](https://ollama.com/) (default: Gemma) for text generation, meaning your data never leaves your PC.
-* Real-time Voice Interaction: Uses Faster-Whisper for fast speech-to-text (STT) and Silero for human-like text-to-speech (TTS).
-* Interruptible Speech: You can interrupt the assistant while it's speaking, making conversations feel natural.
-* Vector Memory: Remembers past interactions using ChromaDB, allowing for context-aware conversations.
-* Autonomous Idle Mode: If you are silent for too long, Saiko will initiate "idle talk" (like a VTuber thinking out loud) to keep the interaction alive.
-* PC Control & Tools: Can open the browser, launch notepad, and control system volume.
-* Native Math Engine: Calculates math expressions directly without sending them to the LLM for faster and more accurate responses. 
+---
 
-## 📂 Project Structure
+## Features
 
-The repository is organized to separate the core logic from memory management and utility tools:
+- 100% Local and Private
+- Real-time voice conversations
+- Interruptible speech
+- English and Russian support
+- Screen analysis ("look at my screen")
+- Long-term vector memory
+- Autonomous idle talk
+- Built-in math engine
+- Basic PC control (browser, notepad, volume)
+- VTuber avatar lip sync, emotions, blinking, and body movement
 
-* `main_united.py`: The core application. Contains the logic for audio streaming, LLM routing, VAD, and OS commands.
-* `memory_Ai/`: Contains the ChromaDB vector database (`vector_memory/`) and `memory_manager.py` which handles saving and retrieving contextual dialogue.
-* `help_tools/`: A suite of utilities to manage the assistant's brain:
-  * `edit_memory_beta.py`: Console menu to search, delete, or manually inject facts into the vector memory.
-  * `view_memory_beta.py`: Displays all raw records currently stored in the database.
-  * `transcribe_reference.py`: A utility to batch transcribe `.wav` files using Faster-Whisper.
+---
 
-## 🛠️ Installation & Setup
+## Core Technologies
 
-### 1. Prerequisites
-* Python 3.10+
-* Ollama: Download and install from [ollama.com](https://ollama.com/).
-* NVIDIA GPU (Recommended): The code is optimized for CUDA (`device="cuda"`).
+- Python 3.10+
+- llama.cpp
+- Google Gemma 3 4B IT (GGUF)
+- Faster-Whisper
+- Silero VAD
+- Silero TTS
+- Moondream 2
+- ChromaDB
+- VMC Protocol
+
+---
+
+## Project Structure
+
+```text
+main_united.py          Main application
+memory_Ai/
+  memory_manager.py     Vector memory logic
+  vector_memory/        Persistent memory database
+help_tools/
+  edit_memory_beta.py   Memory editor
+  view_memory_beta.py   Memory viewer
+  transcribe_reference.py
+models/
+  google_gemma-3-4b-it-Q5_K_M.gguf
+README.md
+requirements.txt
+```
+
+---
+
+## Installation
+
+### 1. Requirements
+
+- Python 3.10 or newer
+- NVIDIA GPU recommended
+- CUDA-enabled PyTorch for best performance
 
 ### 2. Install Dependencies
-Clone the repository, create a virtual environment, and install the required packages.
 
 ```bash
 pip install -r requirements.txt
+```
 
-Important Note for GPU Users: To utilize your NVIDIA GPU, you must install the CUDA-enabled version of PyTorch. Visit the PyTorch website to get the correct installation command for your system before running the script.
+### 3. Download a GGUF Model
+
+Place your model in the `models/` folder.
+
+Default model:
+
+```text
+models/google_gemma-3-4b-it-Q5_K_M.gguf
 ```
-### 3. Pull the Language Model
-By default, Saiko uses the gemma model. You need to pull it via Ollama:
-```
-ollama run gemma
-```
-🚀 Usage
-Run the main script:
-```
+
+### 4. First Launch
+
+The first launch will download:
+- Faster-Whisper models
+- Silero models
+- Moondream 2 weights
+
+---
+
+## Usage
+
+```bash
 python main_united.py
 ```
-* First Launch: There will be a long loading time and delay when you first launch it. The script needs to download the Faster-Whisper and Silero models to your local cache.
 
-* Input Mode: Upon startup, you can choose between Voice (microphone) or Keyboard input.
+Choose:
+1. Voice input
+2. Keyboard input
 
-* Math Queries: When asking math problems, simply type/say the equation (e.g., 2 + 2). WARNING: Do not use "?" for math queries (e.g., do not use 2 + 2?), as it breaks the regex parser.
+Exit with:
+- Ctrl+Q
+- "stop"
+- "bye"
 
-* Exit: Press Ctrl+Q or say/type "stop" or "bye" to shut down the assistant safely and close audio streams.
+---
 
-## ⚙️ Customization (Where to change things)
-### All main configurations are located at the top of main_united.py. You can easily tweak the assistant to your liking:
+## Voice Commands
 
-### AI Models & Voice
+### Vision
+- "Look at my screen"
+- "What's on my screen?"
+- "Describe my screen"
 
-* Change the LLM: ``` Change OLLAMA_MODEL = "gemma" to any model you have pulled (e.g., llama3, mistral). ```
+### System Control
+- "Open browser"
+- "Open notepad"
+- "Volume up"
+- "Volume down"
 
-* Change the Voice: ``` Change SPEAKER = "en_0" to another Silero voice profile. ```
-Note: If you want to change the language, you must update the TTS model language parameters and the prompt.
+### Math
+- "2 + 2"
+- "What is 15 * 7"
 
-* Hardware Execution: If you don't have an NVIDIA GPU,
+---
+
+## Configuration
+
+All settings are located at the top of `main_united.py`.
+
+### LLM
+
+```python
+LLM_MODEL_PATH = "models/google_gemma-3-4b-it-Q5_K_M.gguf"
+LLM_N_GPU_LAYERS = 0
+LLM_N_THREADS = 4
+LLM_N_CTX = 4096
+LLM_MAX_TOKENS = 512
 ```
-change SILERO_DEVICE = "cuda" to "cpu", and update the Whisper setup to device="cpu", compute_type="int8".
+
+### Vision
+
+```python
+VISION_DEVICE = "cuda"
+VISION_LOCAL_ONLY = True
 ```
 
-### Personality
-Modify the `system_prompt` variable in `main_united.py` to change Saiko's identity, tone, and behavior rules.
+### Audio
 
-## Microphone & Silence Sensitivity
-Adjust the VAD (Voice Activity Detection) settings in `main_united.py`:
+```python
+SAMPLE_RATE = 48000
+ASR_SAMPLING_RATE = 16000
+```
 
-`VAD_CONFIDENCE_THRESHOLD = 0.5` (Increase if it picks up too much background noise).
+### VAD
 
-`VAD_SILENCE_SECS = 2.0` (How long you need to pause before it considers you finished speaking).
+```python
+VAD_CONFIDENCE_THRESHOLD = 0.5
+VAD_SILENCE_SECS = 2.0
+VAD_MAX_SECS = 10.0
+VAD_MIN_SPEECH_SECS = 0.3
+```
 
-### Idle Mode Behavior
-`IDLE_TIMEOUT = 50:` Seconds of silence before Saiko speaks on her own.
+### Idle Mode
 
-`MAX_IDLE_TALK = 5:` Maximum consecutive autonomous messages before she waits for your input.
+```python
+IDLE_TIMEOUT = 50
+MAX_IDLE_TALK = 5
+```
 
-# so this is file will "readme" can be changed then time
+---
 
-# if you know how change code better, you can write in comments or fork idk
+## Personality Customization
+
+Edit the `system_prompt` variable in `main_united.py` to change:
+- Personality
+- Tone of voice
+- Behavioral rules
+- Emotion usage
+
+---
+
+## Hardware Recommendations
+
+Minimum:
+- 16 GB RAM (4GB)
+- Modern CPU
+
+Recommended:
+- NVIDIA GPU with 8 GB+ VRAM
+- 32 GB RAM
+
+---
+
+## Current Capabilities
+
+- Streaming LLM responses
+- Real-time speech interruption
+- English and Russian TTS
+- Live weather, time, and location context
+- Screenshot understanding
+- Persistent vector memory
+- VTuber avatar animation
+
+---
+
+## License
+
+Use and modify freely for personal and educational projects. If you company you can't use this project and code also, write me about access, in twitter
+
+---
+
+## Author
+
+Created by San San. 
+
+Saiko is an experimental autonomous AI companion designed to feel alive, expressive, and fully local.
