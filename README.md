@@ -78,7 +78,7 @@ pip install -r requirements.txt
 
 ### 3. Download a GGUF Model
 
-Place your model in the `models/` folder.
+Place your model in the `models/` folder. (you need create folder myself)
 
 Default model:
 
