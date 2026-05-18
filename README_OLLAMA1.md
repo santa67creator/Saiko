@@ -215,6 +215,8 @@ This project is open-source and free to use for personal and educational purpose
 
 Commercial use or corporate deployment is strictly prohibited without prior permission. For commercial inquiries, licensing, or access requests, please contact me on Twitter.
 
+Licensed under AGPL-3.0 with Commons Clause. See LICENSE and COMMONS-CLAUSE.md
+
 ---
 
 ## Author
