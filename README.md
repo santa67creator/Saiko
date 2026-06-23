@@ -12,6 +12,8 @@ All core AI processing runs on your own computer:
 
 After the initial model download, the assistant can work offline.
 
+<img width="1280" height="664" alt="5188371402275361982" src="https://github.com/user-attachments/assets/0af3ce98-f88d-4809-a697-8cf03eb070a0" />
+
 ---
 
 ## Features
