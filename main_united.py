@@ -8,13 +8,14 @@ import threading
 import requests
 import queue
 import subprocess
-#import mss
-import io
+import mss
 from PIL import Image
 import re
 import torch
 import sounddevice as sd
-from llama_cpp import Llama
+from llama_cpp import Llama 
+import pyautogui
+import keyboard
 import numpy as np
 from datetime import datetime
 from num2words import num2words
@@ -30,7 +31,7 @@ LLM_N_THREADS = 4 # number of CPU threads
 LLM_N_CTX = 4096 # context window size
 LLM_MAX_TOKENS = 512 # maximum tokens in response
 # --- VISION SETTINGS (Moondream2) ---
-VISION_DEVICE = "cpu" # "cpu" "cuda"
+VISION_DEVICE = "cuda" # "cpu"
 VISION_LOCAL_ONLY = True # False internet, True local cache, ordinary it's internet
 #--- SETTINGS (silero) ---
 SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
@@ -43,7 +44,7 @@ VAD_SILENCE_SECS = 2.0 # seconds of silence to consider the end of speech
 VAD_MAX_SECS = 10.0 # maximum recording length to prevent infinite recording
 VAD_MIN_SPEECH_SECS = 0.3 # minimum length of speech to consider valid
 # --- IDLE SETTINGS ---
-IDLE_TIMEOUT = 500  # seconds before considering idle
+IDLE_TIMEOUT = 50  # seconds before considering idle
 MAX_IDLE_TALK = 5 # maximum times to do idle talk before we stop trying until user is active again
 
 def needs_context_trigger(text):
@@ -400,17 +401,19 @@ def open_notepad():
         elif platform.system() == "Darwin":
             subprocess.run(["open", "-a", "TextEdit"], check=False)
         else:
-            subprocess.run(["kitty", "-e", "nvim", "~/saiko_notes.txt"], check=False) # subprocess.run(["gedit"], check=False)
+            subprocess.run(["gedit"], check=False)
         return "Launching notepad."
     except FileNotFoundError:
         return "Could not find a text editor to open"
 
 def volume_up():
-    subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+"], check=False)
+    for _ in range(5):
+        pyautogui.press("volumeup")
     return "Increased volume."
 
 def volume_down():
-    subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"], check=False)
+    for _ in range(5):
+        pyautogui.press("volumedown")
     return "Decreased volume."
 
 commands = {
@@ -532,10 +535,12 @@ VISION_KEYWORDS = ["look at this", "what's on my screen", "describe my screen", 
     
 def capture_screenshot_pil():
     """Captures a screenshot and returns PIL Image for Moondream2."""
-    result = subprocess.run(["grim", "-"], capture_output=True, check=True)
-    img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
-    img.thumbnail((768, 768))
-    return img
+    with mss.mss() as sct:
+        monitor = sct.monitors[1]
+        screenshot = sct.grab(monitor)
+        img = Image.frombytes("RGB", screenshot.size, screenshot.rgb, "raw", "RGB")
+        img.thumbnail((768, 768))
+        return img
 
 def detect_vision_trigger(query: str) -> bool:
     q = query.lower()
@@ -615,7 +620,7 @@ def get_live_context():
 class Assistant:
     def __init__(self):
         print(">>> [1/6] Loading Faster-Whisper ASR model...")
-        self.model_asr = WhisperModel("base.en", device="cpu", compute_type="int8") # device=cuda, compute_type="float16"
+        self.model_asr = WhisperModel("base.en", device="cuda", compute_type="float16")
 
         print(">>> [2/6] Loading Silero VAD model...")
         self.model_vad, self.utils_vad = torch.hub.load(repo_or_dir='snakers4/silero-vad',
@@ -645,13 +650,9 @@ class Assistant:
         self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False, ) #chat_format="gemma"
 
         print(">>> [6/6] Loading Moondream2 vision model...")
-        vision_dtype = torch.float16 if VISION_DEVICE == "cuda" else torch.float32
-        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, dtype=vision_dtype, device_map=VISION_DEVICE, local_files_only=VISION_LOCAL_ONLY,) # "moondream/starmie-v1", "vikhyatk/moondream2"
-        if VISION_DEVICE == "cuda":
-            self.model_vision = torch.compile(self.model_vision)  # GPU
-            print(f"✅ Moondream2 loaded on [{VISION_DEVICE}] (compiled)")
-        else:
-            print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]") # PyTorch 2.0 compilation for faster inference
+        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=VISION_DEVICE, local_files_only=VISION_LOCAL_ONLY,) # "moondream/starmie-v1", "vikhyatk/moondream2"
+        self.model_vision = torch.compile(self.model_vision) # PyTorch 2.0 compilation for faster inference
+        print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]")
         self.is_running = True
         self.messages_history = [{'role': 'system', 'content': system_prompt}]
         self.last_user_activity_time = time.time()
@@ -728,7 +729,12 @@ class Assistant:
     def input_keyboard(self):
         return input("\n👤 Enter text (or 'stop' to exit): ")
 
+    def toggle_exit(self):
+        print("\n⌨️ Exit with Ctrl+Q...")
+        self.is_running = False
+
     def setup_keyboard_shortcuts(self):
+        keyboard.add_hotkey('ctrl+q', lambda: self.toggle_exit())
         print("   Ctrl+Q - exit")
 
     def _stream_and_speak(self, response, interrupt_msg="[!] Response interrupted by user.") -> str:
