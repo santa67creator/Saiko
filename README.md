@@ -6,7 +6,7 @@ All core AI processing runs on your own computer:
 - Speech recognition with Faster-Whisper
 - Language generation with llama.cpp + Google Gemma 3 GGUF
 - Text-to-speech with Silero TTS
-- Vision with Moondream 2
+- Vision with SmolVLM2
 - Long-term vector memory
 - Real-time VTuber animation through VMC Protocol
 
@@ -48,7 +48,7 @@ After the initial model download, the assistant can work offline.
 ## Project Structure
 
 ```text
-main_united.py          Main application
+main_united20.py          Main application
 memory_Ai/
   memory_manager.py     Vector memory logic
   vector_memory/        Persistent memory database
@@ -72,9 +72,6 @@ git clone https://github.com/santa67creator/cool-yea-jarvis.git
 
 Activate env (or create your own):
 ```bash
-# Windows
-./venv4/Scripts/Activate
-
 # Linux / macOS
 source venv4/bin/activate
 ```
@@ -120,13 +117,6 @@ Select: `Stable` → `Pip` → `Python` → your CUDA version.
 
 `llama-cpp-python` must be compiled with CUDA flags. Install it **before** running `requirements.txt`.
 
-**Windows:**
-```bash
-set CMAKE_ARGS="-DGGML_CUDA=on"
-set FORCE_CMAKE=1
-pip install llama-cpp-python --force-reinstall --no-cache-dir
-```
-
 **Linux / macOS:**
 ```bash
 CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --no-cache-dir
@@ -170,10 +160,10 @@ models/google_gemma-3-4b-it-Q5_K_M.gguf
 The first launch will automatically download:
 - Faster-Whisper models
 - Silero VAD / TTS models
-- Moondream 2 weights
+- SmolVLM2
 
 ```bash
-python main_united.py
+python main_united20.py
 ```
 
 ---
@@ -181,7 +171,7 @@ python main_united.py
 ## Usage
 
 ```bash
-python main_united.py
+python main_united20.py
 ```
 
 Choose:
@@ -224,7 +214,7 @@ To see the avatar move, run a compatible app (e.g. VSeeFace or VNyan) configured
 
 ## Configuration
 
-All settings are at the top of `main_united.py`.
+All settings are at the top of `main_united20.py`.
 
 ### LLM
 
@@ -242,8 +232,12 @@ LLM_MAX_TOKENS = 512
 ### Vision
 
 ```python
-VISION_DEVICE = "cuda"
-VISION_LOCAL_ONLY = True
+VISION_MODEL_PATH = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
+VISION_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+VISION_LOCAL_ONLY = False  # Set True after the model has been downloaded once
+VISION_MAX_IMAGE_SIZE = 512
+VISION_MAX_NEW_TOKENS = 64
+
 ```
 
 ### Audio
@@ -265,7 +259,7 @@ VAD_MIN_SPEECH_SECS = 0.3
 ### Idle Mode
 
 ```python
-IDLE_TIMEOUT = 50
+IDLE_TIMEOUT = 500
 MAX_IDLE_TALK = 5
 ```
 
@@ -273,7 +267,7 @@ MAX_IDLE_TALK = 5
 
 ## Personality Customization
 
-Edit the `system_prompt` variable in `main_united.py` to change:
+Edit the `system_prompt` variable in `main_united20.py` to change:
 - Personality
 - Tone of voice
 - Behavioral rules
