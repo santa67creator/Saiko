@@ -153,7 +153,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-venv4/               # твоя папка venv
+venv4/      
 .venv*/
 .venv/
 

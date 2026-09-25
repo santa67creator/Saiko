@@ -21,7 +21,7 @@ from num2words import num2words
 from memory_Ai.memory_manager import VectoryManagerMemory
 from faster_whisper import WhisperModel
 from pythonosc import udp_client
-from transformers import AutoModelForCausalLM
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 # --- SETTINGS LLM ---
 LLM_MODEL_PATH = "models/google_gemma-3-4b-it-Q5_K_M.gguf"
@@ -29,9 +29,12 @@ LLM_N_GPU_LAYERS = 0 # -1 = all layers on GPU
 LLM_N_THREADS = 4 # number of CPU threads
 LLM_N_CTX = 4096 # context window size
 LLM_MAX_TOKENS = 512 # maximum tokens in response
-# --- VISION SETTINGS (Moondream2) ---
-VISION_DEVICE = "cpu" # "cpu" "cuda"
-VISION_LOCAL_ONLY = True # False internet, True local cache, ordinary it's internet
+# --- VISION SETTINGS (SmolVLM2) ---
+VISION_MODEL_PATH = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
+VISION_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+VISION_LOCAL_ONLY = False  # Set True after the model has been downloaded once
+VISION_MAX_IMAGE_SIZE = 512
+VISION_MAX_NEW_TOKENS = 64
 #--- SETTINGS (silero) ---
 SILERO_DEVICE = "cpu" # Use "cuda" if you have an NVIDIA GPU and the necessary drivers installed for PyTorch
 SAMPLE_RATE = 48000
@@ -531,10 +534,10 @@ def process_ai_command(response_text):
 VISION_KEYWORDS = ["look at this", "what's on my screen", "describe my screen", "what do you see", "analyze my screen"]
     
 def capture_screenshot_pil():
-    """Captures a screenshot and returns PIL Image for Moondream2."""
+    """Capture the Wayland screen and return a small PIL image for the vision model."""
     result = subprocess.run(["grim", "-"], capture_output=True, check=True)
     img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
-    img.thumbnail((768, 768))
+    img.thumbnail((VISION_MAX_IMAGE_SIZE, VISION_MAX_IMAGE_SIZE))
     return img
 
 def detect_vision_trigger(query: str) -> bool:
@@ -644,14 +647,22 @@ class Assistant:
         print(">>> [5/6] Loading Llama.cpp model")
         self.llm = Llama(model_path = LLM_MODEL_PATH, n_gpu_layers=LLM_N_GPU_LAYERS, n_threads=LLM_N_THREADS, n_ctx=LLM_N_CTX, verbose=False, ) #chat_format="gemma"
 
-        print(">>> [6/6] Loading Moondream2 vision model...")
-        vision_dtype = torch.float16 if VISION_DEVICE == "cuda" else torch.float32
-        self.model_vision = AutoModelForCausalLM.from_pretrained("vikhyatk/moondream2", trust_remote_code=True, dtype=vision_dtype, device_map=VISION_DEVICE, local_files_only=VISION_LOCAL_ONLY,) # "moondream/starmie-v1", "vikhyatk/moondream2"
-        if VISION_DEVICE == "cuda":
-            self.model_vision = torch.compile(self.model_vision)  # GPU
-            print(f"✅ Moondream2 loaded on [{VISION_DEVICE}] (compiled)")
-        else:
-            print(f"✅ Moondream2 loaded on [{VISION_DEVICE}]") # PyTorch 2.0 compilation for faster inference
+        print(">>> [6/6] Loading SmolVLM2 vision model...")
+        self.vision_device = torch.device(VISION_DEVICE)
+        self.vision_dtype = torch.float16 if self.vision_device.type == "cuda" else torch.float32
+
+        self.processor_vision = AutoProcessor.from_pretrained(
+            VISION_MODEL_PATH,
+            local_files_only=VISION_LOCAL_ONLY,
+        )
+        self.model_vision = AutoModelForImageTextToText.from_pretrained(
+            VISION_MODEL_PATH,
+            torch_dtype=self.vision_dtype,
+            local_files_only=VISION_LOCAL_ONLY,
+        ).to(self.vision_device)
+        self.model_vision.eval()
+        print(f"✅ SmolVLM2 loaded on [{self.vision_device.type}]" +
+              (" (FP16)" if self.vision_device.type == "cuda" else " (FP32)"))
         self.is_running = True
         self.messages_history = [{'role': 'system', 'content': system_prompt}]
         self.last_user_activity_time = time.time()
@@ -806,17 +817,77 @@ class Assistant:
             self.audio_streamer.speak(err)
             return err
         try:
-            print("[Vision] Moondream2 analyzing screenshot...")
-            enoded_img = self.model_vision.encode_image(img)
-            vision_question = (f"The user said: '{user_input}'. "
-                f"Look at this screenshot and answer concisely. "
-                f"If there is text visible, read it. "
-                f"Keep the answer short, 1-2 sentences, plain text only.")
-            vision_result = self.model_vision.query(enoded_img, vision_question)
-            visual_description = vision_result['answer']
+            print("[Vision] SmolVLM2 analyzing screenshot...")
+            vision_question = (
+                f"The user said: '{user_input}'. "
+                "Look at this screenshot and answer concisely. "
+                "Identify the important visible UI, windows, applications, objects, "
+                "and readable text. Do not invent details. "
+                "Keep the answer to 1-2 short sentences, plain text only."
+            )
+
+            # Build the chat prompt first, then explicitly pass the PIL image
+            # through the processor. This is the robust Transformers path for
+            # image-text models and avoids relying on inline PIL handling inside
+            # apply_chat_template().
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": vision_question},
+                ],
+            }]
+
+            prompt = self.processor_vision.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+
+            inputs = self.processor_vision(
+                text=prompt,
+                images=[img],
+                return_tensors="pt",
+            )
+
+            # Move tensors to the selected device without converting token IDs to float.
+            inputs = {
+                key: value.to(self.vision_device) if torch.is_tensor(value) else value
+                for key, value in inputs.items()
+            }
+            if "pixel_values" in inputs and inputs["pixel_values"].is_floating_point():
+                inputs["pixel_values"] = inputs["pixel_values"].to(dtype=self.vision_dtype)
+
+            print(
+                f"[Vision] Input tokens: {inputs['input_ids'].shape[-1]}, "
+                f"pixel_values: {tuple(inputs['pixel_values'].shape) if 'pixel_values' in inputs else 'none'}"
+            )
+
+            with torch.inference_mode():
+                if self.vision_device.type == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        generated_ids = self.model_vision.generate(
+                            **inputs,
+                            do_sample=False,
+                            max_new_tokens=VISION_MAX_NEW_TOKENS,
+                        )
+                else:
+                    generated_ids = self.model_vision.generate(
+                        **inputs,
+                        do_sample=False,
+                        max_new_tokens=VISION_MAX_NEW_TOKENS,
+                    )
+
+            prompt_length = inputs["input_ids"].shape[-1]
+            generated_text = self.processor_vision.decode(
+                generated_ids[0][prompt_length:],
+                skip_special_tokens=True,
+            ).strip()
+            visual_description = generated_text or "I could not extract a useful description from the screenshot."
             print(f"[Vision] Description: {visual_description}")
         except Exception as e:
-            err = f"An error occurred during vision processing: {e}"
+            err = f"An error occurred during vision processing: {type(e).__name__}: {e}"
+            print(f"[Vision] {err}")
             self.audio_streamer.speak(err)
             return err
 
