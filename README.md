@@ -39,7 +39,7 @@ After the initial model download, the assistant can work offline.
 - Faster-Whisper
 - Silero VAD
 - Silero TTS
-- Moondream 2
+- SmolVLM2
 - ChromaDB
 - VMC Protocol
 
